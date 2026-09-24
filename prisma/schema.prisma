@@ -67,9 +67,10 @@ model Shop {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  catalogs Catalog[]
-  ruleSets RuleSet[]
-  products ProductIndex[]
+  catalogs         Catalog[]
+  ruleSets         RuleSet[]
+  products         ProductIndex[]
+  productDeletions ProductIndexDeletion[]
 }
 
 enum IndexBuildStatus {
@@ -220,10 +221,27 @@ model ProductIndex {
   /// Product.updatedAt from Shopify. A write with older data than this is
   /// skipped, so a slow rebuild can't overwrite a fresher webhook update.
   shopifyUpdatedAt     DateTime?
+  /// When collectionIds was read from Shopify. Collection changes don't move
+  /// Product.updatedAt, so collectionIds has its own guard: a write only
+  /// replaces it with data read at the same time or later.
+  collectionsReadAt    DateTime?
   /// When the app last wrote this row from Shopify's product data. Collection
   /// membership updates don't change it; a rebuild uses it to find deleted
   /// products.
   updatedAt            DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@id([shopId, productId])
+}
+
+/// Products deleted from Shopify, kept so a rebuild that was already running
+/// can't bring them back from its older snapshot. Cleared by each rebuild.
+model ProductIndexDeletion {
+  shopId    String
+  /// Shopify product GID
+  productId String
+  deletedAt DateTime
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 

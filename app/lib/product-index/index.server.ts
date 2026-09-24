@@ -19,6 +19,7 @@ import {
   countProducts,
   deleteProduct,
   removeCollection,
+  removeProductsDeletedSince,
   removeProductsNotWrittenSince,
   setCollectionMembership,
   upsertProducts,
@@ -255,10 +256,11 @@ export async function finishProductIndexBuild(
     return;
   }
 
+  const startedAt = shop.productIndexStartedAt;
   try {
     const operation = await getBulkOperation(admin, operationId);
     if (!operation) {
-      await markFailed(shop.id, "Shopify no longer has this bulk operation.");
+      await markFailed(shop.id, "Shopify no longer has this bulk operation.", operationId);
       return;
     }
     if (UNFINISHED_STATUSES.has(operation.status)) return;
@@ -267,6 +269,7 @@ export async function finishProductIndexBuild(
         shop.id,
         `Bulk operation ${operation.status.toLowerCase()}` +
           (operation.errorCode ? ` (${operation.errorCode})` : ""),
+        operationId,
       );
       return;
     }
@@ -277,11 +280,14 @@ export async function finishProductIndexBuild(
       await readJsonl(operation.url, (line) => accumulator.addLine(line));
     }
 
-    await upsertProducts(shop.id, accumulator.products());
-    const removed = await removeProductsNotWrittenSince(shop.id, shop.productIndexStartedAt);
+    await upsertProducts(shop.id, accumulator.products(), { collectionsReadAt: startedAt });
+    const deleted = await removeProductsDeletedSince(shop.id, startedAt);
+    const removed = await removeProductsNotWrittenSince(shop.id, startedAt);
 
-    await prisma.shop.update({
-      where: { id: shop.id },
+    // Only if this is still the shop's current rebuild: a newer one may have
+    // started while this one was writing, and must not be marked finished.
+    const { count } = await prisma.shop.updateMany({
+      where: { id: shop.id, productIndexOperationId: operationId, productIndexStatus: "RUNNING" },
       data: {
         productIndexStatus: "COMPLETED",
         productIndexRebuiltAt: new Date(),
@@ -289,10 +295,12 @@ export async function finishProductIndexBuild(
       },
     });
     console.log(
-      `Product index for ${shopDomain}: ${accumulator.productCount} products written, ${removed} removed`,
+      `Product index for ${shopDomain}: ${accumulator.productCount} products written, ` +
+        `${removed + deleted} removed` +
+        (count === 0 ? " (a newer rebuild has started since)" : ""),
     );
   } catch (error) {
-    await markFailed(shop.id, describeError(error));
+    await markFailed(shop.id, describeError(error), operationId);
   }
 }
 
@@ -346,9 +354,15 @@ export async function checkProductIndexBuild(
   return { running: false, productCount: Number(operation?.rootObjectCount ?? 0) };
 }
 
-async function markFailed(shopId: string, error: string): Promise<void> {
-  await prisma.shop.update({
-    where: { id: shopId },
+/**
+ * With an operation ID, only marks the rebuild failed if it's still the
+ * shop's current, running one, so a stale rebuild can't hide a newer one.
+ */
+async function markFailed(shopId: string, error: string, operationId?: string): Promise<void> {
+  await prisma.shop.updateMany({
+    where: operationId
+      ? { id: shopId, productIndexOperationId: operationId, productIndexStatus: "RUNNING" }
+      : { id: shopId },
     data: { productIndexStatus: "FAILED", productIndexError: error },
   });
 }
@@ -390,6 +404,8 @@ export async function refreshProduct(
   }
 
   const query = buildSingleProductQuery(onlineStorePublicationId);
+  // Taken before the read, so it's never later than the data it describes.
+  const readAt = new Date();
   const collectionIds: string[] = [];
   let product: SingleProductResult["product"] = null;
   let collectionsAfter: string | null = null;
@@ -414,31 +430,54 @@ export async function refreshProduct(
     await deleteProduct(shop.id, productId);
     return;
   }
-  await upsertProducts(shop.id, [toIndexedProduct(product, collectionIds)]);
+  await upsertProducts(shop.id, [toIndexedProduct(product, collectionIds)], {
+    collectionsReadAt: readAt,
+  });
 }
 
 /**
- * Shopify updates smart collection membership some time after a product is
- * saved, and sends no webhook when it does, so the read in refreshProduct can
- * miss it. Product index tests 7 and 7c: a read 2 seconds after the save
- * missed an addition, and a read 30 seconds after missed a removal; both had
- * happened a few minutes later. Each product webhook therefore schedules
- * several more reads, further apart. Moves to delayed BullMQ jobs in
- * Phase 1, step 5; the nightly rebuild catches anything slower.
+ * When a product starts or stops matching a collection's conditions, Shopify
+ * updates the membership some time after the product is saved, and sends no
+ * webhook when it does, so the read in refreshProduct can miss it. Product
+ * index tests 7 and 7c: a read 2 seconds after the save missed an addition,
+ * and a read 30 seconds after missed a removal; both had happened a few
+ * minutes later. The same applies when a collection with conditions is
+ * created or its conditions change. Each product and collection webhook
+ * therefore schedules several more reads, further apart. Moves to delayed
+ * BullMQ jobs in Phase 1, step 5; the nightly rebuild catches anything slower.
  */
-export const PRODUCT_RECHECK_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
-const productRechecks = createDelayedRunner();
+export const RECHECK_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
+const rechecks = createDelayedRunner();
+
+function scheduleRechecks(key: string, run: (attempt: number) => Promise<void>): void {
+  RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
+    // One key per attempt, so a new event for the same resource restarts all of them.
+    rechecks.schedule(`${key} ${attempt}`, delayMs, () => run(attempt));
+  });
+}
+
+function recheckLabel(attempt: number): string {
+  return `Recheck ${attempt + 1} of ${RECHECK_DELAYS_MS.length} (${describeDelay(RECHECK_DELAYS_MS[attempt])})`;
+}
 
 export function scheduleProductRecheck(
   admin: AdminGraphqlClient,
   shopDomain: string,
   productId: string,
 ): void {
-  PRODUCT_RECHECK_DELAYS_MS.forEach((delayMs, index) => {
-    // One key per attempt, so a new event for the product restarts all of them.
-    productRechecks.schedule(`${shopDomain} ${productId} ${index}`, delayMs, () =>
-      recheckProduct(admin, shopDomain, productId, index),
-    );
+  scheduleRechecks(`${shopDomain} ${productId}`, (attempt) =>
+    recheckProduct(admin, shopDomain, productId, attempt),
+  );
+}
+
+export function scheduleCollectionRecheck(
+  admin: AdminGraphqlClient,
+  shopDomain: string,
+  collectionId: string,
+): void {
+  scheduleRechecks(`${shopDomain} ${collectionId}`, async (attempt) => {
+    const result = await refreshCollection(admin, shopDomain, collectionId);
+    console.log(`${recheckLabel(attempt)} for ${collectionId}: ${describeCollectionResult(result)}`);
   });
 }
 
@@ -452,11 +491,10 @@ async function recheckProduct(
   await refreshProduct(admin, shopDomain, productId);
   const after = await collectionIdsFor(shopDomain, productId);
 
-  // Logged so we can learn how long Shopify takes to update smart collections.
+  // Logged so we can learn how long Shopify takes to apply collection conditions.
   const changed = before?.slice().sort().join() !== after?.slice().sort().join();
-  const delay = describeDelay(PRODUCT_RECHECK_DELAYS_MS[attempt]);
   console.log(
-    `Recheck ${attempt + 1} of ${PRODUCT_RECHECK_DELAYS_MS.length} (${delay}) for ${productId}: ` +
+    `${recheckLabel(attempt)} for ${productId}: ` +
       (changed
         ? `collections changed (${before?.length ?? 0} -> ${after?.length ?? 0})`
         : "no collection change"),
@@ -513,20 +551,29 @@ interface CollectionMembersResult {
 
 /**
  * Re-reads a collection's full product list and updates `collectionIds` to
- * match. Works for manual and smart collections alike.
+ * match. Reads the final membership, so it doesn't matter how the collection
+ * gets its products: since 2026-07 one collection can combine conditions,
+ * manually added products and exclusions.
  *
  * A very large collection takes one request per 250 products, which can
  * outlast Shopify's webhook timeout; this moves to the job queue with BullMQ
  * (Phase 1, step 5). A retried delivery is harmless.
+ *
+ * Returns how many rows changed, `"deleted"` if the collection no longer
+ * exists, or null if the shop is unknown.
  */
+export type CollectionRefreshResult = { added: number; removed: number } | "deleted" | null;
+
 export async function refreshCollection(
   admin: AdminGraphqlClient,
   shopDomain: string,
   collectionId: string,
-): Promise<void> {
+): Promise<CollectionRefreshResult> {
   const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
-  if (!shop) return;
+  if (!shop) return null;
 
+  // Taken before the read, so it's never later than the data it describes.
+  const readAt = new Date();
   const productIds: string[] = [];
   let after: string | null = null;
   for (;;) {
@@ -538,8 +585,8 @@ export async function refreshCollection(
     const collection: CollectionMembersResult["collection"] = result.data.collection;
     if (!collection) {
       // Deleted between the webhook being sent and now.
-      await removeCollection(shop.id, collectionId);
-      return;
+      await removeCollection(shop.id, collectionId, readAt);
+      return "deleted";
     }
     productIds.push(...collection.products.nodes.map((product) => product.id));
     const { hasNextPage, endCursor } = collection.products.pageInfo;
@@ -547,12 +594,14 @@ export async function refreshCollection(
     after = endCursor;
   }
 
-  const { added, removed } = await setCollectionMembership(shop.id, collectionId, productIds);
-  if (added || removed) {
-    console.log(
-      `Collection ${collectionId} for ${shopDomain}: added to ${added} products, removed from ${removed}`,
-    );
-  }
+  return setCollectionMembership(shop.id, collectionId, productIds, readAt);
+}
+
+export function describeCollectionResult(result: CollectionRefreshResult): string {
+  if (result === null) return "shop not found";
+  if (result === "deleted") return "collection no longer exists, removed from the index";
+  if (!result.added && !result.removed) return "no change";
+  return `added to ${result.added} products, removed from ${result.removed}`;
 }
 
 export async function removeCollectionFromIndex(

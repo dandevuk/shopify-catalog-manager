@@ -30,7 +30,7 @@ api_version = "2026-07"
   uri = "/webhooks/bulk_operations/finish"
 
   [[webhooks.subscriptions]]
-  # Manual collection changes fire only these, not products/update
+  # Adding products to a collection by hand fires these, not reliably products/update
   topics = [ "collections/create", "collections/update", "collections/delete" ]
   uri = "/webhooks/collections"
 

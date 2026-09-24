@@ -13,8 +13,9 @@ import { payloadGid } from "../lib/shopify/webhook-payload";
  *
  * Create and update re-read the product with GraphQL rather than trusting the
  * payload, which lacks collections and channel publication, then read it
- * again after 30 seconds, 2 minutes and 10 minutes to catch smart collection
- * changes Shopify applies after the save. An error returns a 500 so Shopify retries the delivery.
+ * again after 30 seconds, 2 minutes and 10 minutes to catch collection
+ * membership changes (from collection conditions) that Shopify applies after
+ * the save. An error returns a 500 so Shopify retries the delivery.
  *
  * Next step in Phase 1: queue a debounced rule evaluation for the catalogs
  * whose rules touch the changed fields. products/create matters most: new
