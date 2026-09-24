@@ -51,12 +51,31 @@ model Shop {
   billingStatus   String?
   installedAt     DateTime  @default(now())
   uninstalledAt   DateTime?
+
+  /// Online Store channel publication, used for ProductIndex.onlineStorePublished
+  onlineStorePublicationId String?
+
+  // Product index rebuild (bulk operation). Only the latest rebuild is tracked.
+  productIndexOperationId String?
+  productIndexStatus      IndexBuildStatus?
+  productIndexError       String?
+  /// When the app asked Shopify to start the latest rebuild
+  productIndexStartedAt   DateTime?
+  /// When the latest successful rebuild finished writing the index
+  productIndexRebuiltAt   DateTime?
+
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   catalogs Catalog[]
   ruleSets RuleSet[]
   products ProductIndex[]
+}
+
+enum IndexBuildStatus {
+  RUNNING
+  COMPLETED
+  FAILED
 }
 
 enum CatalogType {
@@ -198,6 +217,12 @@ model ProductIndex {
   variantSummary       Json?
   /// Only the metafields that some rule references
   metafields           Json?
+  /// Product.updatedAt from Shopify. A write with older data than this is
+  /// skipped, so a slow rebuild can't overwrite a fresher webhook update.
+  shopifyUpdatedAt     DateTime?
+  /// When the app last wrote this row from Shopify's product data. Collection
+  /// membership updates don't change it; a rebuild uses it to find deleted
+  /// products.
   updatedAt            DateTime @updatedAt
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)

@@ -1,11 +1,19 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
 import { ensureShop, updateShopPlan } from "../lib/shop.server";
 import { listCatalogs } from "../lib/shopify/catalogs.server";
-import type { QueryCost } from "../lib/shopify/graphql.server";
+import { describeError, type QueryCost } from "../lib/shopify/graphql.server";
+import {
+  checkProductIndexBuild,
+  getProductIndexSummary,
+  startProductIndexRebuild,
+  type BuildProgress,
+  type ProductIndexSummary,
+} from "../lib/product-index/index.server";
+import { formatDateTime } from "../lib/format";
 import {
   getShopDiagnostics,
   runPublicationRoundTrip,
@@ -17,7 +25,8 @@ import {
 /**
  * Diagnostics: spike test 8. Confirms which catalog queries work with the
  * app's scopes, and measures latency and query cost for reads and for
- * publicationUpdate with a real app token.
+ * publicationUpdate with a real app token. Also shows the product index and
+ * can rebuild it.
  */
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -37,22 +46,45 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       productCount: catalog.productCount,
     }));
 
+  // If a rebuild is running, ask Shopify for progress. This also finishes a
+  // rebuild whose bulk_operations/finish webhook never arrived.
+  let indexProgress: BuildProgress | null = null;
+  let indexCheckError: string | null = null;
+  try {
+    indexProgress = await checkProductIndexBuild(admin, session.shop);
+  } catch (error) {
+    indexCheckError = describeError(error);
+  }
+
   return {
     shop,
     requestedScopes: (process.env.SCOPES ?? "").split(",").filter(Boolean).sort(),
     testableCatalogs,
+    productIndex: await getProductIndexSummary(session.shop),
+    indexProgress,
+    indexCheckError,
   };
 };
 
 type ActionResult =
   | { intent: "probes"; probes: ProbeResult[] }
+  | { intent: "rebuildIndex"; started: boolean; reason: string | null }
   | { intent: "roundTrip"; publicationId: string; roundTrip: RoundTripResult }
   | { intent: "error"; message: string };
 
 export const action = async ({ request }: ActionFunctionArgs): Promise<ActionResult> => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = form.get("intent");
+
+  if (intent === "rebuildIndex") {
+    const result = await startProductIndexRebuild(admin, session.shop);
+    return {
+      intent: "rebuildIndex",
+      started: result.started,
+      reason: result.started ? null : result.reason,
+    };
+  }
 
   if (intent === "probes") {
     return { intent: "probes", probes: await runScopeProbes(admin) };
@@ -85,8 +117,11 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ActionRes
 };
 
 export default function DiagnosticsPage() {
-  const { shop, requestedScopes, testableCatalogs } = useLoaderData<typeof loader>();
+  const { shop, requestedScopes, testableCatalogs, productIndex, indexProgress, indexCheckError } =
+    useLoaderData<typeof loader>();
   const probes = useFetcher<typeof action>();
+  const rebuild = useFetcher<typeof action>();
+  const revalidator = useRevalidator();
   const roundTrip = useFetcher<typeof action>();
 
   const probesBusy = probes.state !== "idle";
@@ -118,6 +153,21 @@ export default function DiagnosticsPage() {
           </s-banner>
         )}
       </s-section>
+
+      <ProductIndexSection
+        summary={productIndex}
+        progress={indexProgress}
+        checkError={indexCheckError}
+        rebuildBusy={rebuild.state !== "idle"}
+        refreshBusy={revalidator.state !== "idle"}
+        rebuildError={
+          rebuild.data?.intent === "rebuildIndex" && !rebuild.data.started
+            ? rebuild.data.reason
+            : null
+        }
+        onRebuild={() => rebuild.submit({ intent: "rebuildIndex" }, { method: "post" })}
+        onRefresh={() => revalidator.revalidate()}
+      />
 
       <s-section heading="Scope and latency checks">
         <s-paragraph>
@@ -170,6 +220,84 @@ export default function DiagnosticsPage() {
         )}
       </s-section>
     </s-page>
+  );
+}
+
+function ProductIndexSection({
+  summary,
+  progress,
+  checkError,
+  rebuildBusy,
+  refreshBusy,
+  rebuildError,
+  onRebuild,
+  onRefresh,
+}: {
+  summary: ProductIndexSummary;
+  progress: BuildProgress | null;
+  checkError: string | null;
+  rebuildBusy: boolean;
+  refreshBusy: boolean;
+  rebuildError: string | null;
+  onRebuild: () => void;
+  onRefresh: () => void;
+}) {
+  const running = summary.status === "RUNNING";
+
+  return (
+    <s-section heading="Product index">
+      <s-paragraph>
+        The app&apos;s own copy of every product&apos;s rule fields. A rebuild reads all
+        products with a bulk operation; the products webhooks keep it current in between.
+      </s-paragraph>
+      <s-paragraph>
+        {summary.productCount} products indexed. Last rebuilt:{" "}
+        {summary.rebuiltAt ? formatDateTime(summary.rebuiltAt) : "never"}.
+      </s-paragraph>
+      <s-paragraph>
+        Online Store publication:{" "}
+        {summary.onlineStorePublicationId ??
+          "not found yet (every product will show as not on the Online Store)"}
+      </s-paragraph>
+
+      {running && (
+        <s-banner tone="info" heading="Rebuild running">
+          <s-paragraph>
+            Started {summary.startedAt ? formatDateTime(summary.startedAt) : "recently"}.
+            {progress?.running ? ` Shopify has read ${progress.productCount} products so far.` : ""}
+          </s-paragraph>
+        </s-banner>
+      )}
+      {summary.status === "FAILED" && (
+        <s-banner tone="critical" heading="The last rebuild failed">
+          <s-paragraph>{summary.error}</s-paragraph>
+        </s-banner>
+      )}
+      {rebuildError && (
+        <s-banner tone="warning" heading="Rebuild not started">
+          <s-paragraph>{rebuildError}</s-paragraph>
+        </s-banner>
+      )}
+      {checkError && (
+        <s-banner tone="warning" heading="Couldn't check the running rebuild">
+          <s-paragraph>{checkError}</s-paragraph>
+        </s-banner>
+      )}
+
+      <s-stack direction="inline" gap="base">
+        <s-button
+          variant="primary"
+          disabled={running}
+          onClick={onRebuild}
+          {...(rebuildBusy ? { loading: true } : {})}
+        >
+          Rebuild index
+        </s-button>
+        <s-button onClick={onRefresh} {...(refreshBusy ? { loading: true } : {})}>
+          Refresh status
+        </s-button>
+      </s-stack>
+    </s-section>
   );
 }
 

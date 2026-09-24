@@ -5,21 +5,30 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { ensureShop } from "../lib/shop.server";
 import { listCatalogs, type CatalogSummary } from "../lib/shopify/catalogs.server";
+import {
+  getProductIndexSummary,
+  type ProductIndexSummary,
+} from "../lib/product-index/index.server";
+import { formatDateTime } from "../lib/format";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   await ensureShop(session.shop);
 
-  const result = await listCatalogs(admin);
+  const [result, productIndex] = await Promise.all([
+    listCatalogs(admin),
+    getProductIndexSummary(session.shop),
+  ]);
   return {
     catalogs: result.catalogs,
     contextError: result.contextError,
     durationMs: result.durationMs,
+    productIndex,
   };
 };
 
 export default function CatalogsPage() {
-  const { catalogs, contextError, durationMs } = useLoaderData<typeof loader>();
+  const { catalogs, contextError, durationMs, productIndex } = useLoaderData<typeof loader>();
 
   const markets = catalogs.filter((catalog) => catalog.type === "MARKET");
   const b2b = catalogs.filter((catalog) => catalog.type === "COMPANY_LOCATION");
@@ -45,6 +54,8 @@ export default function CatalogsPage() {
           catalogs are hidden.
         </s-paragraph>
       </s-section>
+
+      <ProductIndexSection summary={productIndex} />
 
       <CatalogTable heading={`Market catalogs (${markets.length})`} catalogs={markets} />
       <CatalogTable heading={`B2B catalogs (${b2b.length})`} catalogs={b2b} />
@@ -95,6 +106,26 @@ function CatalogTable({ heading, catalogs }: { heading: string; catalogs: Catalo
           ))}
         </s-table-body>
       </s-table>
+    </s-section>
+  );
+}
+
+function ProductIndexSection({ summary }: { summary: ProductIndexSummary }) {
+  return (
+    <s-section heading="Product index">
+      <s-paragraph>
+        {summary.productCount} products indexed.{" "}
+        {summary.rebuiltAt
+          ? `Last rebuilt ${formatDateTime(summary.rebuiltAt)}.`
+          : "The index hasn't been built yet."}
+        {summary.status === "RUNNING" ? " A rebuild is running." : ""}
+      </s-paragraph>
+      {summary.status === "FAILED" && (
+        <s-banner tone="critical" heading="The last rebuild failed">
+          <s-paragraph>{summary.error}</s-paragraph>
+          <s-paragraph>Rebuild it from the Diagnostics page.</s-paragraph>
+        </s-banner>
+      )}
     </s-section>
   );
 }

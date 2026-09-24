@@ -70,6 +70,21 @@ shows otherwise:
 12. The `catalogs` query also returns `AppCatalog`s (sales channels). Hide them.
 13. `Product.resourcePublicationsV2` lists sales channels by default; pass
     `catalogType: MARKET` or `COMPANY_LOCATION` to see catalog membership.
+14. Adding a product to a sales channel (e.g. the Online Store) fires `products/update`
+    and moves `Product.updatedAt` forward (product index test, Sep 2026).
+15. Adding a product to a manual collection always fires `collections/update` (the
+    payload doesn't list the products), but **not reliably** `products/update`: one test
+    fired both, another only the collection webhook. The index refreshes
+    `collectionIds` from the collection side (`webhooks.collections.tsx`) (product
+    index test, Sep 2026).
+16. Smart collection membership is updated **after** the product save, with no
+    `collections/update`, and it can take over 30 seconds: a read 2 seconds after
+    `products/update` missed an addition, a read 30 seconds after missed a removal, and
+    both had happened a few minutes later. Timed with re-reads: an addition and a
+    removal each landed **between 30 s and 2 min** after the save. Each product webhook
+    schedules re-reads at 30 s, 2 min and 10 min (`scheduleProductRecheck`; moves to
+    BullMQ in step 5), so smart collection membership in the index can lag by up to
+    about 2 minutes (product index test, Sep 2026).
 
 ## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
@@ -112,6 +127,13 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
 - `app/lib/shopify/catalogs.server.ts`: catalog list (Market + B2B, hides AppCatalogs).
 - `app/lib/shopify/diagnostics.server.ts`: scope probes and publicationUpdate timing.
 - `app/lib/shop.server.ts`: Shop record upsert and plan gating values.
+- `app/lib/product-index/products.ts`: pure part of the product index (query builders,
+  bulk JSONL parsing, tested). `store.server.ts`: guarded upserts (a write never
+  replaces newer `shopifyUpdatedAt` data). `index.server.ts`: rebuild via
+  bulkOperationRunQuery, finish on `bulk_operations/finish` (or the Diagnostics poll),
+  single-product refresh for webhooks. The Online Store publication is found by catalog
+  title, because `AppCatalog.apps` needs `read_product_listings`. On 2026-07 channel
+  catalog titles read "Channel Catalog <id> for Online Store" (dev store, Sep 2026).
 - `app/routes/app._index.tsx`: Catalogs page. `app.diagnostics.tsx`: Diagnostics page.
 - `app/routes/webhooks.*.tsx`: webhook handlers (products, collections, publications,
   catalog contexts, compliance, app lifecycle).
@@ -119,8 +141,9 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
 ## Phase 1 next steps
 
 1. Done: app runs on the dev store; scopes settled; latency and cost recorded above.
-2. Product index: bulk operation on install (incl. Online Store published flag), kept
-   current by the products webhooks.
+2. ~~Product index~~: done and tested on the dev store (Sep 2026). Bulk rebuild on
+   install and from Diagnostics; products and collections webhooks; delayed re-reads
+   for smart collections (findings 14 to 16).
 3. Rule evaluator over the index (pure, well tested).
 4. Managed mode: create publication if missing, autoPublish off, diff, chunked apply.
 5. Queue (BullMQ) and worker process; debounce product events.

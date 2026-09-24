@@ -25,7 +25,13 @@ api_version = "2026-07"
   uri = "/webhooks/products"
 
   [[webhooks.subscriptions]]
-  topics = [ "collections/update", "collections/delete" ]
+  # Product index rebuilds (bulkOperationRunQuery) report back here
+  topics = [ "bulk_operations/finish" ]
+  uri = "/webhooks/bulk_operations/finish"
+
+  [[webhooks.subscriptions]]
+  # Manual collection changes fire only these, not products/update
+  topics = [ "collections/create", "collections/update", "collections/delete" ]
   uri = "/webhooks/collections"
 
   [[webhooks.subscriptions]]
