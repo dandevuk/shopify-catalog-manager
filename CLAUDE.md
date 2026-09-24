@@ -1,0 +1,123 @@
+@AGENTS.md
+
+# Smart Catalogs (shopify-catalog-manager)
+
+Public Shopify app (working name "Smart Catalogs") that adds smart-collection-style
+include/exclude rules to Market and B2B catalogs and keeps each catalog's product list
+in sync automatically. Owner: Dan (Quickfire Digital).
+
+The full plan (v2) and the phase 0 spike findings live in the claude.ai project
+"Shopify Catalog Manager App" (`claude/smart-catalogs-app-plan.md` and
+`claude/smart-catalogs-spike-findings.md`). The project copy of the plan is the working
+version. The essentials are summarised below so work here doesn't depend on them.
+
+## Writing style
+
+- British English in docs, comments and commit messages. Shopify product terms keep
+  Shopify's spelling ("catalog", "Online Store").
+- No em dashes.
+
+## Stack
+
+- Shopify React Router app template (TypeScript), `@shopify/shopify-app-react-router`,
+  Admin API version 2026-07.
+- Polaris web components (`<s-page>`, `<s-section>`, `<s-table>` etc.) in the embedded admin.
+- Postgres via Prisma (`prisma/schema.prisma`), Redis for the job queue (BullMQ, not added
+  yet). Both run locally with `docker compose` (`npm run db:up`).
+- Tests: Vitest (`npm test`), unit tests next to the code as `*.test.ts`.
+- npm only (commit `package-lock.json`).
+
+## Confirmed platform behaviour (from the spike, Sep 2026)
+
+These were tested on the Plus dev store and should be treated as facts unless a new test
+shows otherwise:
+
+1. `publicationUpdate` takes at most **50 adds and 50 removes per call** (separate limits,
+   so 100 changes). It's synchronous and **all or nothing**: over the limit returns
+   `PUBLICATION_UPDATE_LIMIT_EXCEEDED` and applies nothing. Use
+   `app/lib/sync/chunk.ts`; retry failed chunks whole.
+2. **No webhook fires for catalog membership changes.** `product_publications/*` only
+   covers the app's own channel. Drift is detected by polling each managed catalog's
+   latest `operations { id }`, `includedProductsCount` and `autoPublish`:
+   - every admin save creates one new `PublicationResourceOperation` (`rowCount` = number
+     of products changed), including count-neutral edits;
+   - the app's own `publicationUpdate` calls, `autoPublish` toggles and auto-published
+     additions create **no** operation.
+   Keep a nightly full reconcile as the backstop (other apps' API edits leave no operation).
+3. A catalog's `publication` can be **null** (availability then follows the sales channel
+   and the admin shows everything as Included). The admin creates a publication with
+   `autoPublish: false` the first time a merchant excludes a product. Managed mode must
+   create one when missing: `publicationCreate(catalogId, defaultState: ALL_PRODUCTS,
+   autoPublish: false)`, then wait for the `AddAllProductsOperation` to complete.
+4. Once a catalog has its own publication with `autoPublish: false`, **new products never
+   reach it**, even when published to every sales channel. This is the core problem the
+   app solves, so `products/create` handling is essential.
+5. `autoPublish: true` adds every new product automatically (even products on no channel).
+   Managed catalogs must keep it **off**. It's the basis of the planned free tier.
+6. A B2B buyer only sees a product that is **in their catalog AND published to the Online
+   Store channel** (checked on the storefront: either one missing gives a 404). Flag
+   "in catalog but not visible" products; don't count them as live.
+7. Catalog publications can **only contain products** (`UNSUPPORTED_PUBLISHABLE_TYPE` for
+   collections). "In collection" is a rule condition resolved from the app's index.
+8. Admin product search lags behind writes. Evaluate rules against the app's own product
+   index (bulk operation on install + webhooks), never live admin search.
+9. `includedProducts` = membership (includes drafts and archived); `products` = the
+   visible subset. **Diff against `includedProducts`.**
+10. Swapping a catalog's publication with `catalogUpdate` orphans the old one. Always
+    reuse the existing publication.
+11. B2B is available on all plans, but non-Plus shops are capped at 3 active B2B catalogs
+    and can't use `CompanyLocationCatalog`. Gate by catalog type and count.
+12. The `catalogs` query also returns `AppCatalog`s (sales channels). Hide them.
+13. `Product.resourcePublicationsV2` lists sales channels by default; pass
+    `catalogType: MARKET` or `COMPANY_LOCATION` to see catalog membership.
+
+## Scopes
+
+Current request (`shopify.app.toml`): `read_products, read_publications,
+write_publications, read_markets, read_companies`. Still to confirm with the Diagnostics
+page (spike test 8): whether market names need `write_markets` and company names need
+`read_customers` (the schema validator lists both). `write_products` is only needed if
+the app creates catalogs. Don't add scopes without checking Diagnostics first.
+
+## Rule model
+
+`In catalog = (Include AND NOT Exclude AND NOT Blocked) OR Pinned`. Include and exclude
+groups each match ALL or ANY of their conditions. Default status handling: all statuses
+(Shopify controls visibility of drafts itself).
+
+## Code map
+
+- `app/lib/sync/diff.ts`, `chunk.ts`: pure diff and publicationUpdate chunking (tested).
+- `app/lib/shopify/graphql.server.ts`: `runGraphql` wrapper returning data, duration and
+  `extensions.cost`.
+- `app/lib/shopify/catalogs.server.ts`: catalog list (Market + B2B, hides AppCatalogs).
+- `app/lib/shopify/diagnostics.server.ts`: scope probes and publicationUpdate timing.
+- `app/lib/shop.server.ts`: Shop record upsert and plan gating values.
+- `app/routes/app._index.tsx`: Catalogs page. `app.diagnostics.tsx`: Diagnostics page.
+- `app/routes/webhooks.*.tsx`: webhook handlers (products, collections, publications,
+  catalog contexts, compliance, app lifecycle).
+
+## Phase 1 next steps
+
+1. Run the app on the dev store, run Diagnostics, settle the scope list, record latency
+   and cost in the plan.
+2. Product index: bulk operation on install (incl. Online Store published flag), kept
+   current by the products webhooks.
+3. Rule evaluator over the index (pure, well tested).
+4. Managed mode: create publication if missing, autoPublish off, diff, chunked apply.
+5. Queue (BullMQ) and worker process; debounce product events.
+
+## Dev store
+
+"Catalog Manager Test" (catalog-manager-test.myshopify.com), Shopify Plus App Development
+plan. Fixtures from the spike: Canada market catalog, "Spike: Powderbound trade" B2B
+catalog (Powderbound company, Dan is a contact), 140 products (120 tagged `spike-seed`
+with vendors, types, market tags and a `custom.trade_tier` metafield), and a
+"Spike: Driftline (smart)" collection.
+
+## Commands
+
+- `npm run db:up` / `npm run db:down`: start/stop Postgres and Redis (Docker).
+- `npm run db:migrate`: create/apply migrations in development.
+- `npm run dev`: `shopify app dev` (tunnel, auth, runs migrations).
+- `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`.

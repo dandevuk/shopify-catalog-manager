@@ -1,0 +1,263 @@
+// Prisma schema for Smart Catalogs.
+// Data model from plan v2 (claude/smart-catalogs-app-plan.md in the project).
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Shopify session storage (used by @shopify/shopify-app-session-storage-prisma).
+// Keep field names as they are: the session storage adapter depends on them.
+// Access tokens live here, so the app doesn't store them anywhere else.
+// ---------------------------------------------------------------------------
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// App data
+// ---------------------------------------------------------------------------
+
+model Shop {
+  id              String    @id @default(cuid())
+  /// myshopify domain, e.g. catalog-manager-test.myshopify.com
+  domain          String    @unique
+  planName        String?
+  isPlus          Boolean   @default(false)
+  /// Non-Plus shops can have up to 3 active B2B catalogs (null = unlimited)
+  b2bCatalogLimit Int?
+  billingStatus   String?
+  installedAt     DateTime  @default(now())
+  uninstalledAt   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  catalogs Catalog[]
+  ruleSets RuleSet[]
+  products ProductIndex[]
+}
+
+enum CatalogType {
+  MARKET
+  COMPANY_LOCATION
+}
+
+model Catalog {
+  id               String      @id @default(cuid())
+  shopId           String
+  /// Shopify GID, e.g. gid://shopify/MarketCatalog/123
+  shopifyCatalogId String
+  /// Shopify GID of the catalog's publication (null until one exists)
+  publicationId    String?
+  type             CatalogType
+  title            String
+  managed          Boolean     @default(false)
+  templateId       String?
+  lastSyncedAt     DateTime?
+
+  // Drift detection (spike finding 2): every admin save creates a new
+  // PublicationResourceOperation; the app's own publicationUpdate calls don't.
+  lastOperationId String?
+  lastKnownCount  Int?
+  lastAutoPublish Boolean?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop      Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  template  RuleSet?        @relation("TemplateCatalogs", fields: [templateId], references: [id], onDelete: SetNull)
+  ruleSet   RuleSet?        @relation("CatalogRuleSet")
+  overrides Override[]
+  syncJobs  SyncJob[]
+  auditLog  AuditLogEntry[]
+
+  @@unique([shopId, shopifyCatalogId])
+}
+
+enum RuleSetKind {
+  CATALOG
+  TEMPLATE
+}
+
+enum MatchMode {
+  ALL
+  ANY
+}
+
+/// Rules for one catalog, or a reusable template shared by many catalogs.
+model RuleSet {
+  id           String      @id @default(cuid())
+  shopId       String
+  kind         RuleSetKind
+  /// Template name (templates only)
+  name         String?
+  /// Owning catalog (catalog rule sets only)
+  catalogId    String?     @unique
+  includeMatch MatchMode   @default(ALL)
+  excludeMatch MatchMode   @default(ANY)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  shop             Shop        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  catalog          Catalog?    @relation("CatalogRuleSet", fields: [catalogId], references: [id], onDelete: Cascade)
+  templateCatalogs Catalog[]   @relation("TemplateCatalogs")
+  conditions       Condition[]
+}
+
+enum ConditionGroup {
+  INCLUDE
+  EXCLUDE
+}
+
+model Condition {
+  id                    String         @id @default(cuid())
+  ruleSetId             String
+  group                 ConditionGroup
+  /// e.g. tag, vendor, product_type, title, category, variant_price, metafield,
+  /// in_collection, status, online_store_published, in_catalog
+  field                 String
+  /// e.g. equals, not_equals, contains, starts_with, greater_than, is_set
+  operator              String
+  value                 String?
+  metafieldDefinitionId String?
+  position              Int            @default(0)
+
+  ruleSet RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  @@index([ruleSetId])
+}
+
+enum OverrideKind {
+  PIN
+  BLOCK
+}
+
+enum OverrideSource {
+  // Added by the merchant in the app
+  APP
+  // Converted from a manual edit in the Shopify admin, found by the drift poller
+  ADMIN_EDIT
+}
+
+model Override {
+  id        String         @id @default(cuid())
+  catalogId String
+  /// Shopify product GID
+  productId String
+  kind      OverrideKind
+  reason    String?
+  source    OverrideSource @default(APP)
+  createdBy String?
+  createdAt DateTime       @default(now())
+
+  catalog Catalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogId, productId])
+}
+
+/// Local copy of the product fields that rules can use. Rules are evaluated
+/// against this index, never against live admin search (spike finding 8).
+model ProductIndex {
+  shopId               String
+  /// Shopify product GID
+  productId            String
+  title                String
+  handle               String?
+  status               String
+  vendor               String?
+  productType          String?
+  tags                 String[]
+  categoryId           String?
+  collectionIds        String[]
+  /// B2B buyers only see products that are in their catalog AND on the
+  /// Online Store (spike finding 6)
+  onlineStorePublished Boolean  @default(false)
+  /// Per-variant fields that some rule references (prices, weights, etc.)
+  variantSummary       Json?
+  /// Only the metafields that some rule references
+  metafields           Json?
+  updatedAt            DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@id([shopId, productId])
+}
+
+enum SyncCause {
+  RULE_CHANGE
+  WEBHOOK
+  DRIFT
+  RECONCILE
+  MANUAL
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  // Paused by the safety threshold, waiting for merchant confirmation
+  PAUSED
+}
+
+model SyncJob {
+  id         String    @id @default(cuid())
+  catalogId  String
+  cause      SyncCause
+  status     JobStatus @default(QUEUED)
+  adds       Int       @default(0)
+  removes    Int       @default(0)
+  error      String?
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  catalog Catalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  @@index([catalogId, createdAt])
+}
+
+enum AuditAction {
+  ADD
+  REMOVE
+}
+
+/// Every add/remove the app makes, with the reason, so merchants can answer
+/// "why is this product in this catalog?"
+model AuditLogEntry {
+  id          String      @id @default(cuid())
+  catalogId   String
+  productId   String
+  action      AuditAction
+  cause       SyncCause
+  ruleSummary String?
+  syncJobId   String?
+  createdAt   DateTime    @default(now())
+
+  catalog Catalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  @@index([catalogId, productId])
+  @@index([catalogId, createdAt])
+}

@@ -1,0 +1,68 @@
+# Shopify app configuration for Smart Catalogs (working name).
+# `shopify app config link` fills in client_id, name, application_url and
+# redirect URLs the first time you link this repo to an app in the Dev Dashboard.
+client_id = ""
+name = "Smart Catalogs"
+embedded = true
+
+[access_scopes]
+# Minimum set from the phase 0 spike (see CLAUDE.md). The Diagnostics page in the
+# app checks whether each catalog query works with these scopes, so we can tell
+# whether read_customers or write_markets are really needed before adding them.
+# write_products is deliberately left out: it's only needed if the app creates
+# catalogs, which v1 doesn't.
+scopes = "read_products,read_publications,write_publications,read_markets,read_companies"
+
+[webhooks]
+api_version = "2026-07"
+
+  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = ["app/uninstalled"]
+
+  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = ["app/scopes_update"]
+
+  # Product changes feed the product index and trigger rule evaluation.
+  # products/create is essential: new products never reach a catalog that has
+  # its own publication unless something adds them (spike finding 4).
+  # Handled by: /app/routes/webhooks.products.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/products"
+  topics = ["products/create", "products/update", "products/delete"]
+
+  # Collection changes affect "In collection" rules.
+  # Handled by: /app/routes/webhooks.collections.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/collections"
+  topics = ["collections/update", "collections/delete"]
+
+  # A managed catalog losing its publication needs attention.
+  # There is no webhook for catalog membership changes; the drift poller covers
+  # those (spike finding 2).
+  # Handled by: /app/routes/webhooks.publications.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/publications"
+  topics = ["publications/delete"]
+
+  # Market and company location changes refresh the catalog list.
+  # Handled by: /app/routes/webhooks.catalog-contexts.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/catalog-contexts"
+  topics = [
+    "markets/create",
+    "markets/update",
+    "markets/delete",
+    "company_locations/create",
+    "company_locations/update",
+    "company_locations/delete",
+  ]
+
+  # Mandatory compliance topics for public apps.
+  # Handled by: /app/routes/webhooks.compliance.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
