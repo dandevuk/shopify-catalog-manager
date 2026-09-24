@@ -1,68 +1,51 @@
-# Shopify app configuration for Smart Catalogs (working name).
-# `shopify app config link` fills in client_id, name, application_url and
-# redirect URLs the first time you link this repo to an app in the Dev Dashboard.
-client_id = ""
-name = "Smart Catalogs"
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "f28912af1b6a71b6390200d76a0216ef"
+name = "Smart Catalogs Dev"
+application_url = "https://shopify.dev/apps/default-app-home"
 embedded = true
 
-[access_scopes]
-# Minimum set from the phase 0 spike (see CLAUDE.md). The Diagnostics page in the
-# app checks whether each catalog query works with these scopes, so we can tell
-# whether read_customers or write_markets are really needed before adding them.
-# write_products is deliberately left out: it's only needed if the app creates
-# catalogs, which v1 doesn't.
-scopes = "read_products,read_publications,write_publications,read_markets,read_companies"
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
 
-  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
   [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
   uri = "/webhooks/app/uninstalled"
-  topics = ["app/uninstalled"]
 
-  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
   [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
-  topics = ["app/scopes_update"]
 
-  # Product changes feed the product index and trigger rule evaluation.
-  # products/create is essential: new products never reach a catalog that has
-  # its own publication unless something adds them (spike finding 4).
-  # Handled by: /app/routes/webhooks.products.tsx
   [[webhooks.subscriptions]]
+  topics = [ "products/create", "products/update", "products/delete" ]
   uri = "/webhooks/products"
-  topics = ["products/create", "products/update", "products/delete"]
 
-  # Collection changes affect "In collection" rules.
-  # Handled by: /app/routes/webhooks.collections.tsx
   [[webhooks.subscriptions]]
+  topics = [ "collections/update", "collections/delete" ]
   uri = "/webhooks/collections"
-  topics = ["collections/update", "collections/delete"]
 
-  # A managed catalog losing its publication needs attention.
-  # There is no webhook for catalog membership changes; the drift poller covers
-  # those (spike finding 2).
-  # Handled by: /app/routes/webhooks.publications.tsx
   [[webhooks.subscriptions]]
+  topics = [ "publications/delete" ]
   uri = "/webhooks/publications"
-  topics = ["publications/delete"]
 
-  # Market and company location changes refresh the catalog list.
-  # Handled by: /app/routes/webhooks.catalog-contexts.tsx
   [[webhooks.subscriptions]]
+  # Market changes refresh the catalog list. company_locations/* webhooks are
+  # left out on purpose: Shopify classes them as protected customer data, and
+  # the app avoids holding customer data. The catalog list is read live instead.
+  topics = [ "markets/create", "markets/update", "markets/delete" ]
   uri = "/webhooks/catalog-contexts"
-  topics = [
-    "markets/create",
-    "markets/update",
-    "markets/delete",
-    "company_locations/create",
-    "company_locations/update",
-    "company_locations/delete",
-  ]
 
-  # Mandatory compliance topics for public apps.
-  # Handled by: /app/routes/webhooks.compliance.tsx
   [[webhooks.subscriptions]]
   uri = "/webhooks/compliance"
-  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_products,read_publications,write_publications,read_markets,read_companies"
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]

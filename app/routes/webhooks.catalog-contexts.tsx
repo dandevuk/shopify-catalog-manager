@@ -2,10 +2,13 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 
 /**
- * markets/* and company_locations/*.
+ * markets/create, markets/update and markets/delete.
  *
- * Next step: refresh the stored catalog list (titles, contexts) when markets or
- * company locations change.
+ * company_locations/* topics are not subscribed: Shopify treats them as
+ * protected customer data, and the app avoids holding customer data.
+ *
+ * Next step: refresh the stored catalog list (titles, contexts) when markets
+ * change.
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic } = await authenticate.webhook(request);

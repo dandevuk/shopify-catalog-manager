@@ -4,7 +4,7 @@
 
 Public Shopify app (working name "Smart Catalogs") that adds smart-collection-style
 include/exclude rules to Market and B2B catalogs and keeps each catalog's product list
-in sync automatically. Owner: Dan (Quickfire Digital).
+in sync automatically. Owner: Dan, as his own product (personal Shopify Partner/Dev Dashboard organisation, not Quickfire Digital).
 
 The full plan (v2) and the phase 0 spike findings live in the claude.ai project
 "Shopify Catalog Manager App" (`claude/smart-catalogs-app-plan.md` and
@@ -71,13 +71,32 @@ shows otherwise:
 13. `Product.resourcePublicationsV2` lists sales channels by default; pass
     `catalogType: MARKET` or `COMPANY_LOCATION` to see catalog membership.
 
-## Scopes
+## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
-Current request (`shopify.app.toml`): `read_products, read_publications,
-write_publications, read_markets, read_companies`. Still to confirm with the Diagnostics
-page (spike test 8): whether market names need `write_markets` and company names need
-`read_customers` (the schema validator lists both). `write_products` is only needed if
-the app creates catalogs. Don't add scopes without checking Diagnostics first.
+Minimum scopes, all confirmed working: `read_products, read_publications,
+write_publications, read_markets, read_companies`. Market names don't need
+`write_markets`; company/location names don't need `read_customers`.
+`write_products` is only needed if the app ever creates catalogs.
+
+`company_locations/*` webhooks are deliberately not subscribed: Shopify classes them as
+protected customer data, and the app avoids holding customer data. The catalog list is
+read live instead.
+
+Gotcha: `shopify app config link` rewrites `shopify.app.toml` from the remote app. On a
+new app it blanked `scopes` and bumped the webhook `api_version`; check both after linking.
+
+## Measured performance (real app token, Plus dev store)
+
+- Catalog list query: ~250 to 370 ms, actual cost 13.
+- Market or company name lookups: ~240 to 250 ms, cost 6.
+- Online Store status for 5 products: 340 ms, cost 20, so collect this in the bulk
+  export for the product index rather than per product.
+- `publicationUpdate` with 1 product: ~320 ms, cost 20 (remove and re-add both
+  passed). Not yet measured with a full 50 + 50 chunk.
+- The app's own `publicationUpdate` calls created no catalog operation (confirmed again
+  with the real app token), so the drift signal holds.
+- Throttle bucket on the Plus dev store: 20,000 points. Non-Plus stores have much less,
+  so the queue must read `extensions.cost.throttleStatus` and back off.
 
 ## Rule model
 
@@ -99,8 +118,7 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
 
 ## Phase 1 next steps
 
-1. Run the app on the dev store, run Diagnostics, settle the scope list, record latency
-   and cost in the plan.
+1. Done: app runs on the dev store; scopes settled; latency and cost recorded above.
 2. Product index: bulk operation on install (incl. Online Store published flag), kept
    current by the products webhooks.
 3. Rule evaluator over the index (pure, well tested).
