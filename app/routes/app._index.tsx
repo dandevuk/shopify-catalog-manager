@@ -14,25 +14,46 @@ import {
 } from "../lib/product-index/index.server";
 import { formatDateTime } from "../lib/format";
 import { toCatalogParam } from "../lib/shopify/catalog-id";
+import prisma from "../db.server";
+
+/** Managed state per Shopify catalog ID, for the Rules column. */
+type ManagedInfo = Record<
+  string,
+  { managed: boolean; lastSyncedAt: string | null }
+>;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   await ensureShop(session.shop);
 
-  const [result, productIndex] = await Promise.all([
+  const [result, productIndex, records] = await Promise.all([
     listCatalogs(admin),
     getProductIndexSummary(session.shop),
+    prisma.catalog.findMany({
+      where: { shop: { domain: session.shop } },
+      select: { shopifyCatalogId: true, managed: true, lastSyncedAt: true },
+    }),
   ]);
+  const managed: ManagedInfo = Object.fromEntries(
+    records.map((r) => [
+      r.shopifyCatalogId,
+      {
+        managed: r.managed,
+        lastSyncedAt: r.lastSyncedAt?.toISOString() ?? null,
+      },
+    ]),
+  );
   return {
     catalogs: result.catalogs,
     contextError: result.contextError,
     durationMs: result.durationMs,
     productIndex,
+    managed,
   };
 };
 
 export default function CatalogsPage() {
-  const { catalogs, contextError, durationMs, productIndex } =
+  const { catalogs, contextError, durationMs, productIndex, managed } =
     useLoaderData<typeof loader>();
 
   const markets = catalogs.filter((catalog) => catalog.type === "MARKET");
@@ -69,8 +90,13 @@ export default function CatalogsPage() {
       <CatalogTable
         heading={`Market catalogs (${markets.length})`}
         catalogs={markets}
+        managed={managed}
       />
-      <CatalogTable heading={`B2B catalogs (${b2b.length})`} catalogs={b2b} />
+      <CatalogTable
+        heading={`B2B catalogs (${b2b.length})`}
+        catalogs={b2b}
+        managed={managed}
+      />
 
       <s-section>
         <s-paragraph>Loaded from Shopify in {durationMs} ms.</s-paragraph>
@@ -82,9 +108,11 @@ export default function CatalogsPage() {
 function CatalogTable({
   heading,
   catalogs,
+  managed,
 }: {
   heading: string;
   catalogs: CatalogSummary[];
+  managed: ManagedInfo;
 }) {
   const navigate = useNavigate();
 
@@ -126,14 +154,29 @@ function CatalogTable({
               </s-table-cell>
               <s-table-cell>{describeOperation(catalog)}</s-table-cell>
               <s-table-cell>
-                <s-button
-                  variant="tertiary"
-                  onClick={() =>
-                    navigate(`/app/catalogs/${toCatalogParam(catalog.id)}`)
-                  }
-                >
-                  Set up rules
-                </s-button>
+                <s-stack direction="block" gap="small-200">
+                  {managed[catalog.id]?.managed && (
+                    <s-stack direction="inline" gap="small-200">
+                      <s-badge tone="success">Managed</s-badge>
+                      {managed[catalog.id]?.lastSyncedAt && (
+                        <s-text>
+                          Synced{" "}
+                          {formatDateTime(managed[catalog.id]!.lastSyncedAt!)}
+                        </s-text>
+                      )}
+                    </s-stack>
+                  )}
+                  <s-button
+                    variant="tertiary"
+                    onClick={() =>
+                      navigate(`/app/catalogs/${toCatalogParam(catalog.id)}`)
+                    }
+                  >
+                    {managed[catalog.id]?.managed
+                      ? "Edit rules"
+                      : "Set up rules"}
+                  </s-button>
+                </s-stack>
               </s-table-cell>
             </s-table-row>
           ))}

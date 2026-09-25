@@ -5,7 +5,12 @@ import type {
   LoaderFunctionArgs,
   ShouldRevalidateFunction,
 } from "react-router";
-import { useFetcher, useLoaderData, useNavigate } from "react-router";
+import {
+  useFetcher,
+  useLoaderData,
+  useNavigate,
+  useRevalidator,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
@@ -32,25 +37,38 @@ import {
 import { countProducts } from "../lib/product-index/store.server";
 import {
   getCatalogMembership,
-  getCollectionNames,
   listCollections,
-  listMetafieldDefinitions,
   listRuleMetafields,
   loadIndexProducts,
   loadOverrides,
   loadRuleCatalog,
   loadRules,
+  ruleNames,
   saveRules,
   type RuleMetafieldDefinition,
   type SavedRules,
 } from "../lib/rules/rules.server";
 import { metafieldKind } from "../lib/product-index/metafields";
+import {
+  getSyncStatus,
+  previewSync,
+  startSync,
+  stopManaging,
+  type SyncPreview,
+  type SyncStatus,
+} from "../lib/sync/managed.server";
+import {
+  describeConfirmation,
+  type Acknowledgement,
+  type Confirmation,
+} from "../lib/sync/plan";
+import { formatDateTime } from "../lib/format";
 
 /**
- * Rule builder (preview only): edit a catalog's include and exclude
- * conditions and see which products they'd put in it, compared with what's
- * in it now. Saving stores the rules in the app; nothing changes in Shopify
- * until managed mode (Phase 1, step 4).
+ * Rule builder: edit a catalog's include and exclude conditions and see
+ * which products they'd put in it, compared with what's in it now. Saving
+ * stores the rules in the app; "Apply to Shopify" (managed mode) makes the
+ * catalog match the saved rules.
  */
 
 async function loadContext(request: Request, param: string | undefined) {
@@ -89,6 +107,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     collections,
     metafieldDefinitions,
     indexedProducts: await countProducts(shop.id),
+    syncStatus: await getSyncStatus(catalog.recordId),
+    /** False until rules are saved for this catalog the first time */
+    hasSavedRules: rules !== null,
   };
 };
 
@@ -109,7 +130,11 @@ export const shouldRevalidate: ShouldRevalidateFunction = ({
 type ActionResult =
   | { intent: "preview"; preview: Preview }
   | { intent: "save"; ok: true }
-  | { intent: "save" | "preview"; ok: false; errors: string[] };
+  | { intent: "save" | "preview"; ok: false; errors: string[] }
+  | { intent: "sync-preview"; syncPreview: SyncPreview }
+  | { intent: "sync-start"; ok: true }
+  | { intent: "sync-start"; ok: false; error: string }
+  | { intent: "stop-managing"; ok: true };
 
 export const action = async ({
   request,
@@ -117,9 +142,46 @@ export const action = async ({
 }: ActionFunctionArgs): Promise<ActionResult> => {
   const { admin, shop, catalog } = await loadContext(request, params.catalogId);
   const body = (await request.json()) as {
-    intent: "preview" | "save";
-    rules: SavedRules;
+    intent:
+      "preview" | "save" | "sync-preview" | "sync-start" | "stop-managing";
+    rules?: SavedRules;
+    acknowledgement?: Acknowledgement;
   };
+
+  if (body.intent === "sync-preview") {
+    return {
+      intent: "sync-preview",
+      syncPreview: await previewSync(admin, shop.id, shop.domain, catalog),
+    };
+  }
+  if (body.intent === "sync-start") {
+    const ack = body.acknowledgement;
+    const acknowledgement: Acknowledgement = {
+      toAdd: Number(ack?.toAdd),
+      toRemove: Number(ack?.toRemove),
+      confirmed: Array.isArray(ack?.confirmed)
+        ? ack.confirmed.filter(
+            (kind): kind is Confirmation["kind"] =>
+              kind === "large_removal" || kind === "empty_result",
+          )
+        : [],
+    };
+    const result = await startSync(
+      admin,
+      shop.id,
+      shop.domain,
+      catalog,
+      acknowledgement,
+    );
+    return result.ok
+      ? { intent: "sync-start", ok: true }
+      : { intent: "sync-start", ok: false, error: result.error };
+  }
+  if (body.intent === "stop-managing") {
+    await stopManaging(catalog.recordId);
+    return { intent: "stop-managing", ok: true };
+  }
+
   const rules = sanitiseRules(body.rules);
 
   if (body.intent === "save") {
@@ -129,24 +191,15 @@ export const action = async ({
       : { intent: "save", ...result };
   }
 
-  const collectionIds = rules.conditions.flatMap((c) =>
-    c.field === "in_collection" && c.value ? [c.value] : [],
-  );
-  const usesMetafields = rules.conditions.some((c) => c.field === "metafield");
-  const [products, overrides, current, collectionNames, definitions] =
-    await Promise.all([
-      loadIndexProducts(shop.id),
-      loadOverrides(catalog.recordId),
-      catalog.publicationId
-        ? getCatalogMembership(admin, catalog.publicationId)
-        : null,
-      // Only the collections these rules name, not the picker's full list.
-      getCollectionNames(admin, collectionIds),
-      usesMetafields ? listMetafieldDefinitions(admin) : [],
-    ]);
-  const names = new Map(collectionNames);
-  for (const definition of definitions)
-    names.set(definition.key, definition.name);
+  const [products, overrides, current, names] = await Promise.all([
+    loadIndexProducts(shop.id),
+    loadOverrides(catalog.recordId),
+    catalog.publicationId
+      ? getCatalogMembership(admin, catalog.publicationId)
+      : null,
+    // Only the collections and metafields these rules name.
+    ruleNames(admin, rules.conditions),
+  ]);
   const evaluation = evaluateRuleSet(rules, products, overrides);
   if (!evaluation.ok) {
     return {
@@ -273,8 +326,15 @@ function toSaved(state: EditorState): SavedRules {
 }
 
 export default function RuleBuilderPage() {
-  const { catalog, rules, collections, metafieldDefinitions, indexedProducts } =
-    useLoaderData<typeof loader>();
+  const {
+    catalog,
+    rules,
+    collections,
+    metafieldDefinitions,
+    indexedProducts,
+    syncStatus,
+    hasSavedRules,
+  } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const previewFetcher = useFetcher<typeof action>();
   const saveFetcher = useFetcher<typeof action>();
@@ -352,9 +412,9 @@ export default function RuleBuilderPage() {
               ? "B2B catalog"
               : "Market catalog"}
             . Products that match the include conditions, and none of the
-            exclude conditions, would be in this catalog. This is a preview:
-            saving stores the rules in the app, but nothing changes in Shopify
-            yet.
+            exclude conditions, would be in this catalog. Saving stores the
+            rules in the app; the catalog in Shopify only changes when you apply
+            them below.
           </s-paragraph>
           <s-stack direction="inline" gap="base">
             <s-button onClick={() => navigate("/app")}>
@@ -424,7 +484,11 @@ export default function RuleBuilderPage() {
             </s-banner>
           )}
           <s-paragraph>
-            {dirty ? "You have unsaved changes." : "These rules are saved."}
+            {dirty
+              ? "You have unsaved changes."
+              : hasSavedRules
+                ? "These rules are saved."
+                : "No rules saved yet. Add conditions, then save them."}
           </s-paragraph>
           <s-stack direction="inline" gap="base">
             <s-button
@@ -445,6 +509,8 @@ export default function RuleBuilderPage() {
         </s-stack>
       </s-section>
 
+      <ApplySection status={syncStatus} dirty={dirty} />
+
       <PreviewSection
         isB2B={catalog.type === "COMPANY_LOCATION"}
         indexedProducts={indexedProducts}
@@ -454,6 +520,271 @@ export default function RuleBuilderPage() {
       />
     </s-page>
   );
+}
+
+/**
+ * Apply to Shopify: review what a sync would change, confirm, and watch it
+ * run. Uses the saved rules, so unsaved edits have to be saved first.
+ */
+function ApplySection({
+  status,
+  dirty,
+}: {
+  status: SyncStatus;
+  dirty: boolean;
+}) {
+  const reviewFetcher = useFetcher<typeof action>();
+  const startFetcher = useFetcher<typeof action>();
+  const stopFetcher = useFetcher<typeof action>();
+  const revalidator = useRevalidator();
+  const [ticked, setTicked] = useState<Confirmation["kind"][]>([]);
+  const [confirmingStop, setConfirmingStop] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  const job = status.latestJob;
+  const running = job?.status === "RUNNING" || job?.status === "QUEUED";
+
+  // While a sync runs, refresh its progress every two seconds.
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => revalidator.revalidate(), 2000);
+    return () => clearInterval(timer);
+    // revalidator.revalidate is stable enough; the running flag is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  const review =
+    reviewFetcher.data?.intent === "sync-preview"
+      ? reviewFetcher.data.syncPreview
+      : null;
+  const startError =
+    startFetcher.data?.intent === "sync-start" && !startFetcher.data.ok
+      ? startFetcher.data.error
+      : null;
+  const showReview = reviewOpen && review && !running;
+  const allTicked =
+    review?.confirmations.every((c) => ticked.includes(c.kind)) ?? false;
+
+  const submitReview = () => {
+    setTicked([]);
+    setReviewOpen(true);
+    reviewFetcher.submit({ intent: "sync-preview" } as never, {
+      method: "post",
+      encType: "application/json",
+    });
+  };
+
+  return (
+    <s-section heading="Apply to Shopify">
+      <s-stack direction="block" gap="base">
+        <s-paragraph>
+          {status.managed
+            ? `This catalog is managed: the app keeps its products in line with the rules.${
+                status.lastSyncedAt
+                  ? ` Last synced ${formatDateTime(status.lastSyncedAt)}.`
+                  : ""
+              } Until automatic syncing arrives, it changes only when you sync.`
+            : "Applying makes the catalog's products match the saved rules, and the catalog becomes managed by the app."}
+        </s-paragraph>
+
+        {status.managed && (
+          <s-paragraph>
+            New products join this catalog when they match the rules. Keep
+            &quot;Automatically add new products&quot; off for this catalog in
+            Shopify: if it&apos;s on, Shopify adds every new product, and the
+            next sync removes the ones that don&apos;t match and turns it off
+            again.
+          </s-paragraph>
+        )}
+
+        <JobStatus job={job} />
+
+        {dirty && (
+          <s-paragraph>Save your rules before applying them.</s-paragraph>
+        )}
+
+        {!showReview && (
+          <s-stack direction="inline" gap="base">
+            <s-button
+              variant="primary"
+              disabled={dirty || running}
+              onClick={submitReview}
+              {...(reviewFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              {status.managed ? "Sync now" : "Review changes"}
+            </s-button>
+            {status.managed && !confirmingStop && (
+              <s-button
+                tone="critical"
+                disabled={running}
+                onClick={() => setConfirmingStop(true)}
+              >
+                Stop managing
+              </s-button>
+            )}
+          </s-stack>
+        )}
+
+        {confirmingStop && (
+          <s-banner tone="warning" heading="Stop managing this catalog?">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                The app stops syncing it. Its products stay as they are, and
+                auto-publish stays off (turn it on in the Shopify admin if you
+                want new products added automatically).
+              </s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  tone="critical"
+                  onClick={() => {
+                    setConfirmingStop(false);
+                    stopFetcher.submit({ intent: "stop-managing" } as never, {
+                      method: "post",
+                      encType: "application/json",
+                    });
+                  }}
+                >
+                  Stop managing
+                </s-button>
+                <s-button onClick={() => setConfirmingStop(false)}>
+                  Cancel
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {showReview && review.blockers.length > 0 && (
+          <s-banner tone="critical" heading="Can't apply yet">
+            {review.blockers.map((blocker) => (
+              <s-paragraph key={blocker}>{blocker}</s-paragraph>
+            ))}
+          </s-banner>
+        )}
+
+        {showReview && review.blockers.length === 0 && (
+          <s-banner
+            tone={review.confirmations.length > 0 ? "warning" : "info"}
+            heading={
+              review.toAdd === 0 &&
+              review.toRemove === 0 &&
+              !review.createsPublication
+                ? "The catalog already matches the rules"
+                : `Add ${review.toAdd} and remove ${review.toRemove} products`
+            }
+          >
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                The catalog goes from {review.currentCount} to{" "}
+                {review.resultCount} products.
+              </s-paragraph>
+              {review.createsPublication && (
+                <s-paragraph>
+                  It has no product list of its own yet, so one is created
+                  first, starting with every product.
+                </s-paragraph>
+              )}
+              {(review.turnsOffAutoPublish || review.createsPublication) && (
+                <s-paragraph>
+                  Auto-publish will be off, so new products only join the
+                  catalog when they match the rules.
+                </s-paragraph>
+              )}
+              {review.confirmations.map((confirmation) => (
+                <s-checkbox
+                  key={confirmation.kind}
+                  label={describeConfirmation(confirmation)}
+                  checked={ticked.includes(confirmation.kind)}
+                  onChange={(event) => {
+                    const on = event.currentTarget.checked;
+                    setTicked((current) =>
+                      on
+                        ? [...current, confirmation.kind]
+                        : current.filter((kind) => kind !== confirmation.kind),
+                    );
+                  }}
+                />
+              ))}
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  disabled={!allTicked}
+                  onClick={() => {
+                    setReviewOpen(false);
+                    startFetcher.submit(
+                      {
+                        intent: "sync-start",
+                        acknowledgement: {
+                          toAdd: review.toAdd,
+                          toRemove: review.toRemove,
+                          confirmed: ticked,
+                        },
+                      } as never,
+                      { method: "post", encType: "application/json" },
+                    );
+                  }}
+                  {...(startFetcher.state !== "idle" ? { loading: true } : {})}
+                >
+                  Apply changes
+                </s-button>
+                <s-button onClick={() => setReviewOpen(false)}>Cancel</s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {startError && (
+          <s-banner tone="critical" heading="Not applied">
+            <s-paragraph>{startError}</s-paragraph>
+          </s-banner>
+        )}
+      </s-stack>
+    </s-section>
+  );
+}
+
+function JobStatus({ job }: { job: SyncStatus["latestJob"] }) {
+  if (!job) return null;
+  const counts = `${job.adds} added, ${job.removes} removed`;
+  switch (job.status) {
+    case "QUEUED":
+    case "RUNNING":
+      return (
+        <s-banner tone="info" heading="Syncing">
+          <s-paragraph>{counts} so far.</s-paragraph>
+        </s-banner>
+      );
+    case "SUCCEEDED":
+      return (
+        <s-banner
+          tone={job.error ? "warning" : "success"}
+          heading="Last sync finished"
+        >
+          <s-paragraph>
+            {counts}
+            {job.finishedAt ? ` (${formatDateTime(job.finishedAt)})` : ""}.
+          </s-paragraph>
+          {job.error && <s-paragraph>{job.error}</s-paragraph>}
+        </s-banner>
+      );
+    case "PAUSED":
+      return (
+        <s-banner
+          tone="warning"
+          heading="Last sync stopped before making changes"
+        >
+          <s-paragraph>{job.error}</s-paragraph>
+        </s-banner>
+      );
+    default:
+      return (
+        <s-banner tone="critical" heading="Last sync failed">
+          <s-paragraph>
+            {counts} before it stopped. {job.error}
+          </s-paragraph>
+        </s-banner>
+      );
+  }
 }
 
 function ConditionGroupEditor({

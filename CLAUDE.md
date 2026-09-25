@@ -97,6 +97,13 @@ shows otherwise:
 18. Editing a product metafield in the admin fires `products/update` and moves
     `Product.updatedAt` forward, so the products webhook keeps indexed metafields
     current (metafield conditions test, Sep 2026).
+19. A catalog created in the 2026 admin **always gets a publication**, starting with
+    every product (filled by a `PublicationResourceOperation` that is ACTIVE for a
+    short while): "Automatically add new products" ticked gives `autoPublish: true`,
+    unticked gives `autoPublish: false`. A null publication (finding 3) therefore only
+    comes from older catalogs or API-created ones, so managed mode's
+    publication-creating path is untested on the dev store. Syncs are refused while a
+    catalog operation is CREATED or ACTIVE (managed mode test, Sep 2026).
 
 ## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
@@ -176,12 +183,21 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    install and from Diagnostics; products and collections webhooks; delayed re-reads
    for collection conditions (findings 14 to 17).
 3. ~~Rule evaluator~~: done and tested on the dev store (Sep 2026), with a preview-only
-   rule builder (tag, vendor, product type, title, collection, status, Online Store).
-   Next: metafield conditions (index must store the metafields rules use), a category
-   picker (evaluator already supports category), and possibly the "not visible" warning
-   for Market catalogs (only B2B was checked on the storefront, finding 6).
-4. Managed mode: create publication if missing, autoPublish off, diff, chunked apply.
-5. Queue (BullMQ) and worker process; debounce product events.
+   rule builder (tag, vendor, product type, title, collection, status, Online Store),
+   plus metafield conditions (PR #3). Still open: a category picker (the evaluator
+   already supports category), and possibly the "not visible" warning for Market
+   catalogs (only B2B was checked on the storefront, finding 6).
+4. Managed mode (`app/lib/sync/plan.ts`, `apply.server.ts`, `managed.server.ts`):
+   "Apply to Shopify" on the rules page. Uses the saved rules; creates the publication if
+   missing, turns autoPublish off, applies 50 + 50 chunks (rejected chunks are halved to
+   isolate bad products), writes the audit log and the drift baseline. Safety: the
+   merchant confirms the counts (re-checked on the server), removals of more than 25% or
+   100 products and empty results need an extra tick, the index must be built, one sync
+   per catalog at a time, and **development stores only** until step 5 is tested. Syncs
+   run in-process for now (a restart interrupts them); catalogs change only on Apply or
+   Sync now. "Stop managing" leaves products and autoPublish as they are.
+5. Queue (BullMQ) and worker process; debounce product events; automatic syncing of
+   managed catalogs; move syncs and delayed re-reads off the web process.
 
 ## Planned features (not yet scheduled)
 
