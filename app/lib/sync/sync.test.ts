@@ -36,9 +36,14 @@ describe("chunkPublicationUpdate", () => {
   });
 
   it("keeps 50 adds in one call and splits 51 into two", () => {
-    expect(chunkPublicationUpdate({ toAdd: ids("a", 50), toRemove: [] })).toHaveLength(1);
+    expect(
+      chunkPublicationUpdate({ toAdd: ids("a", 50), toRemove: [] }),
+    ).toHaveLength(1);
 
-    const chunks = chunkPublicationUpdate({ toAdd: ids("a", 51), toRemove: [] });
+    const chunks = chunkPublicationUpdate({
+      toAdd: ids("a", 51),
+      toRemove: [],
+    });
     expect(chunks).toHaveLength(2);
     expect(chunks[0].add).toHaveLength(50);
     expect(chunks[1].add).toHaveLength(1);
@@ -69,6 +74,8 @@ describe("chunkPublicationUpdate", () => {
   });
 
   it("rejects an invalid limit", () => {
-    expect(() => chunkPublicationUpdate({ toAdd: [], toRemove: [] }, 0)).toThrow();
+    expect(() =>
+      chunkPublicationUpdate({ toAdd: [], toRemove: [] }, 0),
+    ).toThrow();
   });
 });

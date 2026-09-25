@@ -469,9 +469,13 @@ const membershipCache = new Map<string, { at: number; ids: string[] }>();
 export async function getCatalogMembership(
   admin: AdminGraphqlClient,
   publicationId: string,
+  /** Skip the cache: a sync must diff against what's in Shopify right now. */
+  { fresh = false }: { fresh?: boolean } = {},
 ): Promise<string[] | null> {
   const cached = membershipCache.get(publicationId);
-  if (cached && Date.now() - cached.at < MEMBERSHIP_CACHE_MS) return cached.ids;
+  if (!fresh && cached && Date.now() - cached.at < MEMBERSHIP_CACHE_MS) {
+    return cached.ids;
+  }
 
   const ids: string[] = [];
   let cursor: string | null = null;
@@ -494,4 +498,31 @@ export async function getCatalogMembership(
 
   membershipCache.set(publicationId, { at: Date.now(), ids });
   return ids;
+}
+
+/** After a sync the cached list is out of date. */
+export function forgetCatalogMembership(publicationId: string): void {
+  membershipCache.delete(publicationId);
+}
+
+/**
+ * Names for the collections and metafields a rule set uses, so reasons read
+ * "Collection is in Home page" and "Trade tier is gold".
+ */
+export async function ruleNames(
+  admin: AdminGraphqlClient,
+  conditions: RuleCondition[],
+): Promise<Map<string, string>> {
+  const collectionIds = conditions.flatMap((c) =>
+    c.field === "in_collection" && c.value ? [c.value] : [],
+  );
+  const usesMetafields = conditions.some((c) => c.field === "metafield");
+  const [collectionNames, definitions] = await Promise.all([
+    getCollectionNames(admin, collectionIds),
+    usesMetafields ? listMetafieldDefinitions(admin) : [],
+  ]);
+  const names = new Map(collectionNames);
+  for (const definition of definitions)
+    names.set(definition.key, definition.name);
+  return names;
 }
