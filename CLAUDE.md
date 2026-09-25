@@ -22,8 +22,9 @@ version. The essentials are summarised below so work here doesn't depend on them
 - Shopify React Router app template (TypeScript), `@shopify/shopify-app-react-router`,
   Admin API version 2026-07.
 - Polaris web components (`<s-page>`, `<s-section>`, `<s-table>` etc.) in the embedded admin.
-- Postgres via Prisma (`prisma/schema.prisma`), Redis for the job queue (BullMQ, not added
-  yet). Both run locally with `docker compose` (`npm run db:up`).
+- Postgres via Prisma (`prisma/schema.prisma`), Redis for the job queue (BullMQ). Both
+  run locally with `docker compose` (`npm run db:up`); the worker process needs
+  `npm run worker` running alongside `npm run dev`.
 - Tests: Vitest (`npm test`), unit tests next to the code as `*.test.ts`.
 - npm only (commit `package-lock.json`).
 
@@ -175,6 +176,18 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   app's database until managed mode.
 - `app/routes/webhooks.*.tsx`: webhook handlers (products, collections, publications,
   catalog contexts, compliance, app lifecycle).
+- `app/lib/queue/connection.server.ts`: one Redis connection per Queue/Worker instance.
+  `queues.server.ts`: job data types, the `product-index-recheck` and `catalog-sync`
+  queues, and scheduling helpers. Job IDs use `|` as the separator, never `:` (BullMQ
+  rejects a custom ID containing `:` unless it splits into exactly 3 parts, and Shopify
+  GIDs contain `:`). `upsertDelayedJob` debounces by removing any existing job with the
+  same ID before adding the delayed replacement. `CATALOG_SYNC_DEBOUNCE_MS` is 2 minutes,
+  confirmed end to end on the dev store (Sep 2026): a tag edit's webhook queued a debounced
+  job that fired 2 minutes later and re-synced the affected managed catalog with no
+  manual click. `app/worker.ts`: the standalone worker process (`npm run worker`, tsx with
+  `--watch`) that runs both queues; `unauthenticated.admin(shopDomain)` builds each job's
+  admin client (offline session storage, handles token refresh), since the worker has no
+  request context.
 
 ## Phase 1 next steps
 
@@ -204,8 +217,18 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    React Router's default revalidation after the fetcher submission, not a bug.
    Untested: creating a publication for a catalog that has none (finding 19: the 2026
    admin always creates one, so the dev store has no such catalog).
-5. Queue (BullMQ) and worker process; debounce product events; automatic syncing of
-   managed catalogs; move syncs and delayed re-reads off the web process.
+5. ~~Queue~~ (`app/lib/queue`, `app/worker.ts`): done and tested end to end on the dev
+   store (Sep 2026). Product and collection webhooks schedule their existing recheck
+   delays on BullMQ instead of in-process timers, and unconditionally schedule a debounced
+   sync for every managed catalog on the shop (coarse for v1: any product change re-syncs
+   every managed catalog, not just the ones whose rules could be affected). Automatic
+   syncs use `SyncCause.WEBHOOK`; a synthetic acknowledgement is built from the freshly
+   computed plan (no merchant confirmation for automatic runs), so the same safety checks
+   in `managed.server.ts` (large-removal pause, one sync per catalog) still apply.
+   `runAutomaticSync` re-reads the catalog live (`loadRuleCatalog`) rather than trusting
+   cached DB fields, so a merchant re-enabling "Automatically add new products" takes
+   effect immediately. Requires `npm run worker` running (a separate terminal in dev);
+   syncs no longer run in-process on the web server.
 
 ## Planned features (not yet scheduled)
 
@@ -247,4 +270,17 @@ admin so both got a publication (finding 19); safe to delete or reuse.
 - `npm run db:up` / `npm run db:down`: start/stop Postgres and Redis (Docker).
 - `npm run db:migrate`: create/apply migrations in development.
 - `npm run dev`: `shopify app dev` (tunnel, auth, runs migrations).
+- `npm run worker`: the BullMQ worker (`app/worker.ts`), a separate terminal alongside
+  `npm run dev`. Needs `SHOPIFY_API_KEY` and `SHOPIFY_API_SECRET` in `.env` (`npm run env`,
+  i.e. `shopify app env pull`, since `shopify app dev` only injects them into its own
+  child process) and a non-empty `SHOPIFY_APP_URL` (any placeholder works; the worker
+  never runs the OAuth/install flow that actually uses it).
 - `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`.
+
+Windows gotcha: `npm run dev`'s pre-dev `prisma generate` step can fail with
+`EPERM: operation not permitted, rename ... query_engine-windows.dll.node` if another
+Node process still holds the Prisma client open (the worker, or a leftover script from a
+killed/backgrounded run) when `dev` restarts. A failed `prisma generate` here takes down
+the whole `shopify app dev` process, including webhook delivery, with no obvious link
+back to the real cause. Find and kill the stray process (`Get-CimInstance Win32_Process
+-Filter "Name='node.exe'"` to see command lines) before assuming webhooks are broken.

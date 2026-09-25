@@ -1,5 +1,5 @@
 import prisma from "../../db.server";
-import { createDelayedRunner } from "../delayed-runner";
+import { unauthenticated } from "../../shopify.server";
 import {
   describeError,
   runGraphql,
@@ -41,6 +41,9 @@ import {
  * removeProduct to keep single rows current. Adding a product to a manual
  * collection fires only collections/update (not products/update), so the
  * collections/* webhooks call refreshCollection and removeCollectionFromIndex.
+ * Both kinds of webhook also queue a delayed recheck (see RECHECK_DELAYS_MS
+ * below) and, for any catalog the shop manages, a debounced automatic sync
+ * (`app/lib/queue/queues.server.ts`, `app/worker.ts`).
  */
 
 // ---------------------------------------------------------------------------
@@ -522,55 +525,38 @@ export async function refreshProduct(
  * and a read 30 seconds after missed a removal; both had happened a few
  * minutes later. The same applies when a collection with conditions is
  * created or its conditions change. Each product and collection webhook
- * therefore schedules several more reads, further apart. Moves to delayed
- * BullMQ jobs in Phase 1, step 5; the nightly rebuild catches anything slower.
+ * therefore schedules several more reads, further apart (BullMQ delayed
+ * jobs: `scheduleProductRecheck`/`scheduleCollectionRecheck` in
+ * `app/lib/queue/queues.server.ts`, run by `app/worker.ts` calling the two
+ * functions below). The nightly rebuild catches anything slower.
  */
 export const RECHECK_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
-const rechecks = createDelayedRunner();
-
-function scheduleRechecks(
-  key: string,
-  run: (attempt: number) => Promise<void>,
-): void {
-  RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
-    // One key per attempt, so a new event for the same resource restarts all of them.
-    rechecks.schedule(`${key} ${attempt}`, delayMs, () => run(attempt));
-  });
-}
 
 function recheckLabel(attempt: number): string {
   return `Recheck ${attempt + 1} of ${RECHECK_DELAYS_MS.length} (${describeDelay(RECHECK_DELAYS_MS[attempt])})`;
 }
 
-export function scheduleProductRecheck(
-  admin: AdminGraphqlClient,
-  shopDomain: string,
-  productId: string,
-): void {
-  scheduleRechecks(`${shopDomain} ${productId}`, (attempt) =>
-    recheckProduct(admin, shopDomain, productId, attempt),
-  );
+/** Builds an admin client for background work with no request to authenticate. */
+export async function backgroundAdmin(shopDomain: string): Promise<AdminGraphqlClient | null> {
+  try {
+    const { admin } = await unauthenticated.admin(shopDomain);
+    return admin;
+  } catch (error) {
+    // No offline session (e.g. the shop uninstalled since the job was queued).
+    console.error(`No admin session for ${shopDomain}`, error);
+    return null;
+  }
 }
 
-export function scheduleCollectionRecheck(
-  admin: AdminGraphqlClient,
-  shopDomain: string,
-  collectionId: string,
-): void {
-  scheduleRechecks(`${shopDomain} ${collectionId}`, async (attempt) => {
-    const result = await refreshCollection(admin, shopDomain, collectionId);
-    console.log(
-      `${recheckLabel(attempt)} for ${collectionId}: ${describeCollectionResult(result)}`,
-    );
-  });
-}
-
-async function recheckProduct(
-  admin: AdminGraphqlClient,
+/** Run by the worker for a queued product recheck. */
+export async function runProductRecheck(
   shopDomain: string,
   productId: string,
   attempt: number,
 ): Promise<void> {
+  const admin = await backgroundAdmin(shopDomain);
+  if (!admin) return;
+
   const before = await collectionIdsFor(shopDomain, productId);
   await refreshProduct(admin, shopDomain, productId);
   const after = await collectionIdsFor(shopDomain, productId);
@@ -583,6 +569,21 @@ async function recheckProduct(
       (changed
         ? `collections changed (${before?.length ?? 0} -> ${after?.length ?? 0})`
         : "no collection change"),
+  );
+}
+
+/** Run by the worker for a queued collection recheck. */
+export async function runCollectionRecheck(
+  shopDomain: string,
+  collectionId: string,
+  attempt: number,
+): Promise<void> {
+  const admin = await backgroundAdmin(shopDomain);
+  if (!admin) return;
+
+  const result = await refreshCollection(admin, shopDomain, collectionId);
+  console.log(
+    `${recheckLabel(attempt)} for ${collectionId}: ${describeCollectionResult(result)}`,
   );
 }
 
