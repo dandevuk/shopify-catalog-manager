@@ -4,7 +4,10 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
 import { ensureShop } from "../lib/shop.server";
-import { listCatalogs, type CatalogSummary } from "../lib/shopify/catalogs.server";
+import {
+  listCatalogs,
+  type CatalogSummary,
+} from "../lib/shopify/catalogs.server";
 import {
   getProductIndexSummary,
   type ProductIndexSummary,
@@ -29,7 +32,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export default function CatalogsPage() {
-  const { catalogs, contextError, durationMs, productIndex } = useLoaderData<typeof loader>();
+  const { catalogs, contextError, durationMs, productIndex } =
+    useLoaderData<typeof loader>();
 
   const markets = catalogs.filter((catalog) => catalog.type === "MARKET");
   const b2b = catalogs.filter((catalog) => catalog.type === "COMPANY_LOCATION");
@@ -37,11 +41,15 @@ export default function CatalogsPage() {
   return (
     <s-page heading="Catalogs">
       {contextError && (
-        <s-banner tone="warning" heading="Market and company names couldn't be loaded">
+        <s-banner
+          tone="warning"
+          heading="Market and company names couldn't be loaded"
+        >
           <s-paragraph>
-            The catalogs below are complete, but the app couldn&apos;t read which markets
-            or company locations they belong to. This usually means an access scope is
-            missing. Check the Diagnostics page for details.
+            The catalogs below are complete, but the app couldn&apos;t read
+            which markets or company locations they belong to. This usually
+            means an access scope is missing. Check the Diagnostics page for
+            details.
           </s-paragraph>
           <s-paragraph>{contextError}</s-paragraph>
         </s-banner>
@@ -49,16 +57,19 @@ export default function CatalogsPage() {
 
       <s-section heading="About this page">
         <s-paragraph>
-          Every Market and B2B catalog in the store. A catalog with its own product list
-          (a publication) doesn&apos;t receive new products automatically unless
-          auto-publish is on, which is the problem Smart Catalogs solves. Sales channel
-          catalogs are hidden.
+          Every Market and B2B catalog in the store. A catalog with its own
+          product list (a publication) doesn&apos;t receive new products
+          automatically unless auto-publish is on, which is the problem Smart
+          Catalogs solves. Sales channel catalogs are hidden.
         </s-paragraph>
       </s-section>
 
       <ProductIndexSection summary={productIndex} />
 
-      <CatalogTable heading={`Market catalogs (${markets.length})`} catalogs={markets} />
+      <CatalogTable
+        heading={`Market catalogs (${markets.length})`}
+        catalogs={markets}
+      />
       <CatalogTable heading={`B2B catalogs (${b2b.length})`} catalogs={b2b} />
 
       <s-section>
@@ -68,7 +79,13 @@ export default function CatalogsPage() {
   );
 }
 
-function CatalogTable({ heading, catalogs }: { heading: string; catalogs: CatalogSummary[] }) {
+function CatalogTable({
+  heading,
+  catalogs,
+}: {
+  heading: string;
+  catalogs: CatalogSummary[];
+}) {
   const navigate = useNavigate();
 
   if (catalogs.length === 0) {
@@ -97,7 +114,9 @@ function CatalogTable({ heading, catalogs }: { heading: string; catalogs: Catalo
               <s-table-cell>{catalog.title}</s-table-cell>
               <s-table-cell>{describeContexts(catalog)}</s-table-cell>
               <s-table-cell>
-                <s-badge tone={catalog.status === "ACTIVE" ? "success" : "info"}>
+                <s-badge
+                  tone={catalog.status === "ACTIVE" ? "success" : "info"}
+                >
                   {titleCase(catalog.status)}
                 </s-badge>
               </s-table-cell>
@@ -109,7 +128,9 @@ function CatalogTable({ heading, catalogs }: { heading: string; catalogs: Catalo
               <s-table-cell>
                 <s-button
                   variant="tertiary"
-                  onClick={() => navigate(`/app/catalogs/${toCatalogParam(catalog.id)}`)}
+                  onClick={() =>
+                    navigate(`/app/catalogs/${toCatalogParam(catalog.id)}`)
+                  }
                 >
                   Set up rules
                 </s-button>
@@ -160,7 +181,9 @@ function NewProductsBadge({ catalog }: { catalog: CatalogSummary }) {
 
 function describeContexts(catalog: CatalogSummary): string {
   if (catalog.contexts.length === 0) {
-    return catalog.contextCount > 0 ? `${catalog.contextCount} assigned` : "Not assigned";
+    return catalog.contextCount > 0
+      ? `${catalog.contextCount} assigned`
+      : "Not assigned";
   }
   const extra = catalog.contextCount - catalog.contexts.length;
   return extra > 0
