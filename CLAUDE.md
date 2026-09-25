@@ -144,7 +144,17 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   single-product refresh for webhooks. The Online Store publication is found by catalog
   title, because `AppCatalog.apps` needs `read_product_listings`. On 2026-07 channel
   catalog titles read "Channel Catalog <id> for Online Store" (dev store, Sep 2026).
+- `app/lib/rules/conditions.ts`: condition fields, operators and validation (the names
+  the Condition table stores; the builder's menus read `FIELDS`). `evaluate.ts`: the pure
+  evaluator with a reason per product. `preview.ts`: rule result vs current catalog
+  membership. `rules.server.ts`: catalog, saved rules, collections and cached
+  `includedProducts` for the builder. Text matching ignores case and surrounding spaces;
+  an empty include group matches nothing; a rule set with any broken condition isn't
+  evaluated at all.
 - `app/routes/app._index.tsx`: Catalogs page. `app.diagnostics.tsx`: Diagnostics page.
+  `app.catalogs.$catalogId.tsx`: rule builder with live preview (URL param from
+  `app/lib/shopify/catalog-id.ts`, e.g. `MarketCatalog-123`). Saving writes only the
+  app's database until managed mode.
 - `app/routes/webhooks.*.tsx`: webhook handlers (products, collections, publications,
   catalog contexts, compliance, app lifecycle).
 
@@ -154,7 +164,11 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
 2. ~~Product index~~: done and tested on the dev store (Sep 2026). Bulk rebuild on
    install and from Diagnostics; products and collections webhooks; delayed re-reads
    for collection conditions (findings 14 to 17).
-3. Rule evaluator over the index (pure, well tested).
+3. ~~Rule evaluator~~: done and tested on the dev store (Sep 2026), with a preview-only
+   rule builder (tag, vendor, product type, title, collection, status, Online Store).
+   Next: metafield conditions (index must store the metafields rules use), a category
+   picker (evaluator already supports category), and possibly the "not visible" warning
+   for Market catalogs (only B2B was checked on the storefront, finding 6).
 4. Managed mode: create publication if missing, autoPublish off, diff, chunked apply.
 5. Queue (BullMQ) and worker process; debounce product events.
 
