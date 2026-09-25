@@ -105,6 +105,16 @@ shows otherwise:
     comes from older catalogs or API-created ones, so managed mode's
     publication-creating path is untested on the dev store. Syncs are refused while a
     catalog operation is CREATED or ACTIVE (managed mode test, Sep 2026).
+20. **`read_companies` alone is enough for company/location assignment data, with no
+    `read_customers`**: confirmed live on the dev store (Sep 2026) with only
+    `read_companies` granted, for the top-level `companyLocations` and `companies`
+    queries, `CompanyLocation.metafields`, `Company.metafields` (read through
+    `CompanyLocation.company`), and `CompanyLocation.catalogs`. This matters because a
+    static GraphQL schema validator reported `read_customers` as a required scope for
+    the same fields; that's wrong (or at least overly conservative) for this store, so
+    trust a live probe over the validator's declared scopes when they disagree. Confirms
+    the "stay clear of customer data" design decision for B2B assignment rules
+    (Phase 2) is achievable as planned.
 
 ## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
@@ -286,9 +296,12 @@ Steps:
    matching itself is shared with product rules (`matchesMetafieldCondition`, exported
    from `app/lib/rules/evaluate.ts`): company and location metafields are indexed the
    same shape as product metafields (`IndexedMetafields`).
-2. Data layer: live paginated reads for companies, locations, their metafields, and each
-   location's current catalog contexts (`company.locations`,
-   `CompanyLocation.metafields`, `CompanyLocation.catalogs` or equivalent).
+2. ~~Data layer~~: done and tested live against the dev store (Sep 2026, confirmed
+   finding 20 above). `app/lib/assignment/locations.server.ts`: the top-level
+   `companyLocations(first, after)` query (not `company.locations`, to avoid an N+1
+   read per company), each location's `company { id name metafields }`, its own
+   `metafields`, and its `catalogs { nodes { id } }` for current context (the additive
+   diff). Paginated the same way as `listCollections`/`listMetafieldDefinitions`.
 3. Rule builder UI and a preview page (locations, their current contexts, what the rules
    would assign), reusing the product rule builder's shape where it fits.
 4. Apply: `catalogContextUpdate`, additive only (per the design decision above). Needs
@@ -339,7 +352,11 @@ catalog (Powderbound company, Dan is a contact), 140 products (120 tagged `spike
 with vendors, types, market tags and a `custom.trade_tier` metafield), and a
 "Spike: Driftline (smart)" collection. Added during managed mode testing (Sep 2026):
 "Sync Test" and "Sync Test 2" Market catalogs (United States), both created via the
-admin so both got a publication (finding 19); safe to delete or reuse.
+admin so both got a publication (finding 19); safe to delete or reuse. Two companies,
+each with one location, checked during Phase 2's data layer work (Sep 2026): Powderbound
+(location assigned to the "Spike: Powderbound trade" catalog) and Snowdevil (location
+with no catalog context yet). Neither has any metafields set yet; add some (e.g.
+`custom.customer_type`) before testing assignment rules end to end.
 
 ## Commands
 
