@@ -46,7 +46,10 @@ const COLLECTION_GID = "gid://shopify/Collection/";
  * value is written into the query text.
  */
 function productFields(onlineStorePublicationId: string | null): string {
-  if (onlineStorePublicationId && !/^gid:\/\/shopify\/Publication\/\d+$/.test(onlineStorePublicationId)) {
+  if (
+    onlineStorePublicationId &&
+    !/^gid:\/\/shopify\/Publication\/\d+$/.test(onlineStorePublicationId)
+  ) {
     throw new Error(`Not a publication ID: ${onlineStorePublicationId}`);
   }
   return `
@@ -74,7 +77,9 @@ function productFields(onlineStorePublicationId: string | null): string {
  * comes back as separate JSONL lines with a `__parentId` (see
  * BulkProductAccumulator).
  */
-export function buildBulkProductQuery(onlineStorePublicationId: string | null): string {
+export function buildBulkProductQuery(
+  onlineStorePublicationId: string | null,
+): string {
   return `{
   products {
     edges {
@@ -93,7 +98,9 @@ export function buildBulkProductQuery(onlineStorePublicationId: string | null): 
 }
 
 /** One product, used by the products/create and products/update webhooks. */
-export function buildSingleProductQuery(onlineStorePublicationId: string | null): string {
+export function buildSingleProductQuery(
+  onlineStorePublicationId: string | null,
+): string {
   return `#graphql
   query ProductIndexProduct($id: ID!, $collectionsAfter: String) {
     product(id: $id) {${productFields(onlineStorePublicationId)}
@@ -115,7 +122,10 @@ function blankToNull(value: string | null | undefined): string | null {
   return value ? value : null;
 }
 
-export function toIndexedProduct(node: ProductNode, collectionIds: string[]): IndexedProduct {
+export function toIndexedProduct(
+  node: ProductNode,
+  collectionIds: string[],
+): IndexedProduct {
   return {
     productId: node.id,
     title: node.title,
@@ -157,7 +167,8 @@ export class BulkProductAccumulator {
     const id = typeof object.id === "string" ? object.id : null;
     if (!id) return;
 
-    const parentId = typeof object.__parentId === "string" ? object.__parentId : null;
+    const parentId =
+      typeof object.__parentId === "string" ? object.__parentId : null;
     if (parentId) {
       if (id.startsWith(COLLECTION_GID)) {
         const list = this.collections.get(parentId) ?? [];
@@ -187,7 +198,9 @@ export class BulkProductAccumulator {
  * Splits a stream of text chunks into lines. Chunks from a download can end
  * part way through a line, so the unfinished tail is carried over.
  */
-export async function* splitLines(chunks: AsyncIterable<string>): AsyncGenerator<string> {
+export async function* splitLines(
+  chunks: AsyncIterable<string>,
+): AsyncGenerator<string> {
   let buffer = "";
   for await (const chunk of chunks) {
     buffer += chunk;
