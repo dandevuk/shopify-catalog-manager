@@ -481,19 +481,22 @@ export async function refreshProduct(
     product = current;
     if (!current) break;
 
-    collectionIds.push(
-      ...current.collections.nodes.map((collection) => collection.id),
-    );
-    metafields.push(...current.metafields.nodes);
+    // Always move a cursor to the end of the page just read, even for a
+    // finished connection, so the next request asks for the (empty) page
+    // after it rather than the first page again.
     if (!collectionsDone) {
+      collectionIds.push(
+        ...current.collections.nodes.map((collection) => collection.id),
+      );
       const { hasNextPage, endCursor } = current.collections.pageInfo;
       collectionsDone = !hasNextPage || !endCursor;
-      if (!collectionsDone) collectionsAfter = endCursor;
+      collectionsAfter = endCursor ?? collectionsAfter;
     }
     if (!metafieldsDone) {
+      metafields.push(...current.metafields.nodes);
       const { hasNextPage, endCursor } = current.metafields.pageInfo;
       metafieldsDone = !hasNextPage || !endCursor;
-      if (!metafieldsDone) metafieldsAfter = endCursor;
+      metafieldsAfter = endCursor ?? metafieldsAfter;
     }
   }
 

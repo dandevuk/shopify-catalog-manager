@@ -324,10 +324,14 @@ export async function listRuleMetafields(
 ): Promise<RuleMetafieldDefinition[]> {
   const [definitions, indexed] = await Promise.all([
     listMetafieldDefinitions(admin),
+    // One row per key. A metafield with no definition can have a different
+    // type on different products; use the type most products have.
     prisma.$queryRaw<{ key: string; type: string }[]>`
-      SELECT DISTINCT field.key AS key, field.value->>'type' AS type
+      SELECT DISTINCT ON (field.key) field.key AS key, field.value->>'type' AS type
       FROM "ProductIndex", jsonb_each("metafields") AS field
       WHERE "shopId" = ${shopId} AND jsonb_typeof("metafields") = 'object'
+      GROUP BY field.key, field.value->>'type'
+      ORDER BY field.key, count(*) DESC
     `,
   ]);
 

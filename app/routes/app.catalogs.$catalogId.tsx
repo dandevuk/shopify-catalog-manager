@@ -557,16 +557,36 @@ function ConditionRow({
       field !== "metafield" || metafieldDefinitions.length > 0 || isMetafield,
   );
 
+  /** What a dropdown-valued metafield starts as, so it never sits empty. */
+  const defaultMetafieldValue = (
+    chosen: RuleMetafieldDefinition | undefined,
+  ) =>
+    chosen && metafieldKind(chosen.type) === "boolean"
+      ? "true"
+      : (chosen?.choices?.[0] ?? "");
+
   const chooseMetafield = (key: string) => {
     const chosen = metafieldDefinitions.find((d) => d.key === key);
     if (!chosen) return;
-    const kind = metafieldKind(chosen.type);
     onChange({
       metafieldKey: chosen.key,
       metafieldType: chosen.type,
       operator: operatorsFor("metafield", chosen.type)[0],
-      value: kind === "boolean" ? "true" : (chosen.choices?.[0] ?? ""),
+      value: defaultMetafieldValue(chosen),
     });
+  };
+
+  const changeOperator = (operator: ConditionOperator) => {
+    // "is set" and "is not set" save no value. Switching back to an operator
+    // that needs one would leave a dropdown looking chosen but empty, so
+    // start it at its first option again.
+    const needsDefault =
+      isMetafield && operatorTakesValue(operator) && !condition.value.trim();
+    onChange(
+      needsDefault
+        ? { operator, value: defaultMetafieldValue(metafield) }
+        : { operator },
+    );
   };
 
   return (
@@ -619,9 +639,7 @@ function ConditionRow({
           value={condition.operator}
           disabled={operators.length <= 1}
           onChange={(event) =>
-            onChange({
-              operator: event.currentTarget.value as ConditionOperator,
-            })
+            changeOperator(event.currentTarget.value as ConditionOperator)
           }
         >
           {operators.map((operator) => (
