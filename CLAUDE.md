@@ -187,15 +187,23 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    plus metafield conditions (PR #3). Still open: a category picker (the evaluator
    already supports category), and possibly the "not visible" warning for Market
    catalogs (only B2B was checked on the storefront, finding 6).
-4. Managed mode (`app/lib/sync/plan.ts`, `apply.server.ts`, `managed.server.ts`):
-   "Apply to Shopify" on the rules page. Uses the saved rules; creates the publication if
-   missing, turns autoPublish off, applies 50 + 50 chunks (rejected chunks are halved to
-   isolate bad products), writes the audit log and the drift baseline. Safety: the
-   merchant confirms the counts (re-checked on the server), removals of more than 25% or
-   100 products and empty results need an extra tick, the index must be built, one sync
-   per catalog at a time, and **development stores only** until step 5 is tested. Syncs
+4. ~~Managed mode~~ (`app/lib/sync/plan.ts`, `apply.server.ts`, `managed.server.ts`): done
+   and tested on the dev store (Sep 2026), PR #4. "Apply to Shopify" on the rules page.
+   Uses the saved rules; creates the publication if missing, turns autoPublish off,
+   applies 50 + 50 chunks (rejected chunks are halved to isolate bad products, capped at
+   40 rejected calls), writes the audit log and the drift baseline. Safety: the merchant
+   confirms the counts (re-checked on the server), removals of more than 25% or 100
+   products and empty results need an extra tick, the index must be built, syncs are
+   refused while Shopify is still changing the catalog (finding 19), one sync per catalog
+   at a time (row-locked), and **development stores only** until step 5 is tested. Syncs
    run in-process for now (a restart interrupts them); catalogs change only on Apply or
-   Sync now. "Stop managing" leaves products and autoPublish as they are.
+   Sync now. "Stop managing" leaves products and autoPublish as they are. The page polls
+   `app/routes/app.sync-status.$catalogId.tsx` (database only, no Shopify calls) while a
+   sync runs and revalidates once it ends; a very fast sync (e.g. 0 changes) can finish
+   before the first poll, so the result can lag a few seconds behind the click, via
+   React Router's default revalidation after the fetcher submission, not a bug.
+   Untested: creating a publication for a catalog that has none (finding 19: the 2026
+   admin always creates one, so the dev store has no such catalog).
 5. Queue (BullMQ) and worker process; debounce product events; automatic syncing of
    managed catalogs; move syncs and delayed re-reads off the web process.
 
@@ -230,7 +238,9 @@ assign catalogs automatically from rules, e.g. "locations whose company has
 plan. Fixtures from the spike: Canada market catalog, "Spike: Powderbound trade" B2B
 catalog (Powderbound company, Dan is a contact), 140 products (120 tagged `spike-seed`
 with vendors, types, market tags and a `custom.trade_tier` metafield), and a
-"Spike: Driftline (smart)" collection.
+"Spike: Driftline (smart)" collection. Added during managed mode testing (Sep 2026):
+"Sync Test" and "Sync Test 2" Market catalogs (United States), both created via the
+admin so both got a publication (finding 19); safe to delete or reuse.
 
 ## Commands
 
