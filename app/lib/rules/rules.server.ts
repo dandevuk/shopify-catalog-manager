@@ -6,11 +6,19 @@ import {
   type GraphqlResult,
 } from "../shopify/graphql.server";
 import {
+  isSupportedMetafieldType,
+  listItems,
+  metafieldKey,
+  type IndexedMetafields,
+  type MetafieldType,
+} from "../product-index/metafields";
+import {
   validateCondition,
   type MatchMode,
   type RuleCondition,
 } from "./conditions";
 import type { Override } from "./evaluate";
+import type { PreviewProduct } from "./preview";
 
 /**
  * Server side of the rule builder: the catalog being edited, its saved
@@ -132,6 +140,8 @@ export async function loadRules(
       field: c.field,
       operator: c.operator,
       value: c.value,
+      metafieldKey: c.metafieldKey,
+      metafieldType: c.metafieldType,
     })),
   };
 }
@@ -171,7 +181,16 @@ export async function saveRules(
         group: condition.group,
         field: condition.field,
         operator: condition.operator,
-        value: condition.value?.trim() ?? null,
+        value: condition.value?.trim() || null,
+        // Only metafield conditions name a metafield.
+        metafieldKey:
+          condition.field === "metafield"
+            ? (condition.metafieldKey ?? null)
+            : null,
+        metafieldType:
+          condition.field === "metafield"
+            ? (condition.metafieldType ?? null)
+            : null,
         position,
       })),
     });
@@ -189,8 +208,10 @@ export async function loadOverrides(
 }
 
 /** The index rows rules test, plus the title for display. */
-export async function loadIndexProducts(shopId: string) {
-  return prisma.productIndex.findMany({
+export async function loadIndexProducts(
+  shopId: string,
+): Promise<PreviewProduct[]> {
+  const rows = await prisma.productIndex.findMany({
     where: { shopId },
     select: {
       productId: true,
@@ -202,9 +223,125 @@ export async function loadIndexProducts(shopId: string) {
       categoryId: true,
       collectionIds: true,
       onlineStorePublished: true,
+      metafields: true,
     },
     orderBy: { title: "asc" },
   });
+  // The metafields column holds what upsertProducts wrote (IndexedMetafields).
+  return rows.map((row) => ({
+    ...row,
+    metafields: (row.metafields ?? null) as IndexedMetafields | null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Metafield definitions (for the picker and for naming them in reasons)
+// ---------------------------------------------------------------------------
+
+const METAFIELD_DEFINITIONS_QUERY = `#graphql
+  query RuleBuilderMetafieldDefinitions($cursor: String) {
+    metafieldDefinitions(ownerType: PRODUCT, first: 250, after: $cursor) {
+      nodes {
+        namespace
+        key
+        name
+        type {
+          name
+        }
+        validations {
+          name
+          value
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+`;
+
+interface MetafieldDefinitionsPage {
+  metafieldDefinitions: {
+    nodes: {
+      namespace: string;
+      key: string;
+      name: string;
+      type: { name: string };
+      validations: { name: string; value: string | null }[];
+    }[];
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+}
+
+export interface RuleMetafieldDefinition {
+  /** "namespace.key" */
+  key: string;
+  name: string;
+  type: MetafieldType;
+  /** Allowed values, when the definition limits them (the "choices" validation) */
+  choices: string[] | null;
+}
+
+/** Product metafield definitions with a type rules can test. */
+export async function listMetafieldDefinitions(
+  admin: AdminGraphqlClient,
+): Promise<RuleMetafieldDefinition[]> {
+  const definitions: RuleMetafieldDefinition[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 10; page++) {
+    const result: GraphqlResult<MetafieldDefinitionsPage> =
+      await runGraphql<MetafieldDefinitionsPage>(
+        admin,
+        METAFIELD_DEFINITIONS_QUERY,
+        { cursor },
+      );
+    for (const node of result.data.metafieldDefinitions.nodes) {
+      if (!isSupportedMetafieldType(node.type.name)) continue;
+      const choices = node.validations.find((v) => v.name === "choices")?.value;
+      definitions.push({
+        key: metafieldKey(node.namespace, node.key),
+        name: node.name,
+        type: node.type.name,
+        choices: choices ? listItems(choices) : null,
+      });
+    }
+    const { hasNextPage, endCursor } =
+      result.data.metafieldDefinitions.pageInfo;
+    if (!hasNextPage || !endCursor) break;
+    cursor = endCursor;
+  }
+  return definitions.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Definitions, plus metafields found in the product index that have no
+ * definition (imported, or written by other apps), named by their key.
+ */
+export async function listRuleMetafields(
+  admin: AdminGraphqlClient,
+  shopId: string,
+): Promise<RuleMetafieldDefinition[]> {
+  const [definitions, indexed] = await Promise.all([
+    listMetafieldDefinitions(admin),
+    prisma.$queryRaw<{ key: string; type: string }[]>`
+      SELECT DISTINCT field.key AS key, field.value->>'type' AS type
+      FROM "ProductIndex", jsonb_each("metafields") AS field
+      WHERE "shopId" = ${shopId} AND jsonb_typeof("metafields") = 'object'
+    `,
+  ]);
+
+  const known = new Set(definitions.map((d) => d.key));
+  const undefinedOnes = indexed
+    .filter((m) => !known.has(m.key) && isSupportedMetafieldType(m.type))
+    .map((m): RuleMetafieldDefinition => ({
+      key: m.key,
+      name: m.key,
+      type: m.type as MetafieldType,
+      choices: null,
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+  return [...definitions, ...undefinedOnes];
 }
 
 // ---------------------------------------------------------------------------

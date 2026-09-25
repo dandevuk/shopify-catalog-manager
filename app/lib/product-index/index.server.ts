@@ -13,6 +13,7 @@ import {
   findOnlineStorePublication,
   splitLines,
   toIndexedProduct,
+  type MetafieldNode,
   type ProductNode,
 } from "./products";
 import {
@@ -413,13 +414,16 @@ async function markFailed(
 // Single products (webhooks)
 // ---------------------------------------------------------------------------
 
+interface PageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
 interface SingleProductResult {
   product:
     | (ProductNode & {
-        collections: {
-          nodes: { id: string }[];
-          pageInfo: { hasNextPage: boolean; endCursor: string | null };
-        };
+        collections: { nodes: { id: string }[]; pageInfo: PageInfo };
+        metafields: { nodes: MetafieldNode[]; pageInfo: PageInfo };
       })
     | null;
 }
@@ -452,28 +456,45 @@ export async function refreshProduct(
   // Taken before the read, so it's never later than the data it describes.
   const readAt = new Date();
   const collectionIds: string[] = [];
+  const metafields: MetafieldNode[] = [];
   let product: SingleProductResult["product"] = null;
   let collectionsAfter: string | null = null;
+  let metafieldsAfter: string | null = null;
+  let collectionsDone = false;
+  let metafieldsDone = false;
 
-  // A product is rarely in more than 250 collections, but page through if so.
-  for (let page = 0; page < 20; page++) {
+  // A product rarely has more than 250 collections or metafields, but page
+  // through if so. A finished connection keeps its last cursor and comes back
+  // empty while the other one carries on.
+  for (
+    let request = 0;
+    request < 20 && !(collectionsDone && metafieldsDone);
+    request++
+  ) {
     const result: GraphqlResult<SingleProductResult> =
       await runGraphql<SingleProductResult>(admin, query, {
         id: productId,
         collectionsAfter,
+        metafieldsAfter,
       });
-    const page: SingleProductResult["product"] = result.data.product;
-    if (!page) break;
-    product = page;
+    const current: SingleProductResult["product"] = result.data.product;
+    product = current;
+    if (!current) break;
+
     collectionIds.push(
-      ...page.collections.nodes.map((collection) => collection.id),
+      ...current.collections.nodes.map((collection) => collection.id),
     );
-    if (
-      !page.collections.pageInfo.hasNextPage ||
-      !page.collections.pageInfo.endCursor
-    )
-      break;
-    collectionsAfter = page.collections.pageInfo.endCursor;
+    metafields.push(...current.metafields.nodes);
+    if (!collectionsDone) {
+      const { hasNextPage, endCursor } = current.collections.pageInfo;
+      collectionsDone = !hasNextPage || !endCursor;
+      if (!collectionsDone) collectionsAfter = endCursor;
+    }
+    if (!metafieldsDone) {
+      const { hasNextPage, endCursor } = current.metafields.pageInfo;
+      metafieldsDone = !hasNextPage || !endCursor;
+      if (!metafieldsDone) metafieldsAfter = endCursor;
+    }
   }
 
   if (!product) {
@@ -481,9 +502,13 @@ export async function refreshProduct(
     await deleteProduct(shop.id, productId);
     return;
   }
-  await upsertProducts(shop.id, [toIndexedProduct(product, collectionIds)], {
-    collectionsReadAt: readAt,
-  });
+  await upsertProducts(
+    shop.id,
+    [toIndexedProduct(product, collectionIds, metafields)],
+    {
+      collectionsReadAt: readAt,
+    },
+  );
 }
 
 /**

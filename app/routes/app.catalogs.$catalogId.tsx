@@ -14,6 +14,8 @@ import { fromCatalogParam } from "../lib/shopify/catalog-id";
 import {
   FIELDS,
   operatorLabel,
+  operatorsFor,
+  operatorTakesValue,
   validateCondition,
   type ConditionField,
   type ConditionGroup,
@@ -32,13 +34,17 @@ import {
   getCatalogMembership,
   getCollectionNames,
   listCollections,
+  listMetafieldDefinitions,
+  listRuleMetafields,
   loadIndexProducts,
   loadOverrides,
   loadRuleCatalog,
   loadRules,
   saveRules,
+  type RuleMetafieldDefinition,
   type SavedRules,
 } from "../lib/rules/rules.server";
+import { metafieldKind } from "../lib/product-index/metafields";
 
 /**
  * Rule builder (preview only): edit a catalog's include and exclude
@@ -61,9 +67,10 @@ async function loadContext(request: Request, param: string | undefined) {
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, shop, catalog } = await loadContext(request, params.catalogId);
-  const [rules, collections] = await Promise.all([
+  const [rules, collections, metafieldDefinitions] = await Promise.all([
     loadRules(catalog.recordId),
     listCollections(admin),
+    listRuleMetafields(admin, shop.id),
   ]);
 
   return {
@@ -80,6 +87,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       conditions: [],
     },
     collections,
+    metafieldDefinitions,
     indexedProducts: await countProducts(shop.id),
   };
 };
@@ -124,15 +132,21 @@ export const action = async ({
   const collectionIds = rules.conditions.flatMap((c) =>
     c.field === "in_collection" && c.value ? [c.value] : [],
   );
-  const [products, overrides, current, names] = await Promise.all([
-    loadIndexProducts(shop.id),
-    loadOverrides(catalog.recordId),
-    catalog.publicationId
-      ? getCatalogMembership(admin, catalog.publicationId)
-      : null,
-    // Only the collections these rules name, not the picker's full list.
-    getCollectionNames(admin, collectionIds),
-  ]);
+  const usesMetafields = rules.conditions.some((c) => c.field === "metafield");
+  const [products, overrides, current, collectionNames, definitions] =
+    await Promise.all([
+      loadIndexProducts(shop.id),
+      loadOverrides(catalog.recordId),
+      catalog.publicationId
+        ? getCatalogMembership(admin, catalog.publicationId)
+        : null,
+      // Only the collections these rules name, not the picker's full list.
+      getCollectionNames(admin, collectionIds),
+      usesMetafields ? listMetafieldDefinitions(admin) : [],
+    ]);
+  const names = new Map(collectionNames);
+  for (const definition of definitions)
+    names.set(definition.key, definition.name);
   const evaluation = evaluateRuleSet(rules, products, overrides);
   if (!evaluation.ok) {
     return {
@@ -169,6 +183,8 @@ function sanitiseRules(input: SavedRules | undefined): SavedRules {
         operator: String(c.operator ?? ""),
         value:
           c.value === null || c.value === undefined ? null : String(c.value),
+        metafieldKey: c.metafieldKey ? String(c.metafieldKey) : null,
+        metafieldType: c.metafieldType ? String(c.metafieldType) : null,
       }),
     ),
   };
@@ -189,6 +205,9 @@ interface EditableCondition {
   field: ConditionField;
   operator: ConditionOperator;
   value: string;
+  /** Metafield conditions only */
+  metafieldKey: string;
+  metafieldType: string;
 }
 
 /**
@@ -213,6 +232,8 @@ function newCondition(
     field,
     operator: definition.operators[0],
     value: definition.options?.[0].value ?? "",
+    metafieldKey: "",
+    metafieldType: "",
   };
 }
 
@@ -223,6 +244,8 @@ function toEditable(condition: RuleCondition): EditableCondition {
     field: condition.field as ConditionField,
     operator: condition.operator as ConditionOperator,
     value: condition.value ?? "",
+    metafieldKey: condition.metafieldKey ?? "",
+    metafieldType: condition.metafieldType ?? "",
   };
 }
 
@@ -236,17 +259,21 @@ function toSaved(state: EditorState): SavedRules {
   return {
     includeMatch: state.includeMatch,
     excludeMatch: state.excludeMatch,
-    conditions: state.conditions.map(({ group, field, operator, value }) => ({
-      group,
-      field,
-      operator,
-      value,
-    })),
+    conditions: state.conditions.map(
+      ({ group, field, operator, value, metafieldKey, metafieldType }) => ({
+        group,
+        field,
+        operator,
+        value,
+        metafieldKey: field === "metafield" ? metafieldKey : null,
+        metafieldType: field === "metafield" ? metafieldType : null,
+      }),
+    ),
   };
 }
 
 export default function RuleBuilderPage() {
-  const { catalog, rules, collections, indexedProducts } =
+  const { catalog, rules, collections, metafieldDefinitions, indexedProducts } =
     useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const previewFetcher = useFetcher<typeof action>();
@@ -305,7 +332,13 @@ export default function RuleBuilderPage() {
 
   const changeField = (key: string, field: ConditionField) => {
     const fresh = newCondition("INCLUDE", field);
-    update(key, { field, operator: fresh.operator, value: fresh.value });
+    update(key, {
+      field,
+      operator: fresh.operator,
+      value: fresh.value,
+      metafieldKey: "",
+      metafieldType: "",
+    });
   };
 
   const previewData = previewFetcher.data;
@@ -339,6 +372,7 @@ export default function RuleBuilderPage() {
         conditions={state.conditions}
         errors={errors}
         collections={collections}
+        metafieldDefinitions={metafieldDefinitions}
         onAdd={() =>
           setState((s) => ({
             ...s,
@@ -364,6 +398,7 @@ export default function RuleBuilderPage() {
         conditions={state.conditions}
         errors={errors}
         collections={collections}
+        metafieldDefinitions={metafieldDefinitions}
         onAdd={() =>
           setState((s) => ({
             ...s,
@@ -429,6 +464,7 @@ function ConditionGroupEditor({
   conditions,
   errors,
   collections,
+  metafieldDefinitions,
   onAdd,
   onRemove,
   onChange,
@@ -442,6 +478,7 @@ function ConditionGroupEditor({
   conditions: EditableCondition[];
   errors: (string | null)[];
   collections: { id: string; title: string }[];
+  metafieldDefinitions: RuleMetafieldDefinition[];
   onAdd: () => void;
   onRemove: (key: string) => void;
   onChange: (key: string, change: Partial<EditableCondition>) => void;
@@ -476,6 +513,7 @@ function ConditionGroupEditor({
             condition={condition}
             error={condition.value.trim() ? error : null}
             collections={collections}
+            metafieldDefinitions={metafieldDefinitions}
             onChange={(change) => onChange(condition.key, change)}
             onFieldChange={(field) => onFieldChange(condition.key, field)}
             onRemove={() => onRemove(condition.key)}
@@ -494,6 +532,7 @@ function ConditionRow({
   condition,
   error,
   collections,
+  metafieldDefinitions,
   onChange,
   onFieldChange,
   onRemove,
@@ -501,17 +540,44 @@ function ConditionRow({
   condition: EditableCondition;
   error: string | null;
   collections: { id: string; title: string }[];
+  metafieldDefinitions: RuleMetafieldDefinition[];
   onChange: (change: Partial<EditableCondition>) => void;
   onFieldChange: (field: ConditionField) => void;
   onRemove: () => void;
 }) {
   const definition = FIELDS[condition.field];
+  const isMetafield = condition.field === "metafield";
+  const metafield = metafieldDefinitions.find(
+    (d) => d.key === condition.metafieldKey,
+  );
+  const operators = operatorsFor(condition.field, condition.metafieldType);
+  // Metafield is only offered when the store has product metafield definitions.
+  const fields = BUILDER_FIELDS.filter(
+    (field) =>
+      field !== "metafield" || metafieldDefinitions.length > 0 || isMetafield,
+  );
+
+  const chooseMetafield = (key: string) => {
+    const chosen = metafieldDefinitions.find((d) => d.key === key);
+    if (!chosen) return;
+    const kind = metafieldKind(chosen.type);
+    onChange({
+      metafieldKey: chosen.key,
+      metafieldType: chosen.type,
+      operator: operatorsFor("metafield", chosen.type)[0],
+      value: kind === "boolean" ? "true" : (chosen.choices?.[0] ?? ""),
+    });
+  };
 
   return (
     <s-query-container>
-      {/* One row on wide screens (field, operator, value, remove), stacked when narrow. */}
+      {/* One row on wide screens, stacked when narrow. Metafield rows have an extra column. */}
       <s-grid
-        gridTemplateColumns="@container (inline-size > 640px) 1fr 1fr 2fr auto, 1fr"
+        gridTemplateColumns={
+          isMetafield
+            ? "@container (inline-size > 640px) 1fr 1.5fr 1fr 1.5fr auto, 1fr"
+            : "@container (inline-size > 640px) 1fr 1fr 2fr auto, 1fr"
+        }
         gap="base"
         alignItems="center"
       >
@@ -523,72 +589,105 @@ function ConditionRow({
             onFieldChange(event.currentTarget.value as ConditionField)
           }
         >
-          {BUILDER_FIELDS.map((field) => (
+          {fields.map((field) => (
             <s-option key={field} value={field}>
               {FIELDS[field].label}
             </s-option>
           ))}
         </s-select>
 
+        {isMetafield && (
+          <s-select
+            label="Metafield"
+            labelAccessibilityVisibility="exclusive"
+            placeholder="Choose a metafield"
+            value={condition.metafieldKey}
+            onChange={(event) => chooseMetafield(event.currentTarget.value)}
+          >
+            {metafieldDefinitions.map((d) => (
+              <s-option key={d.key} value={d.key}>
+                {d.name === d.key ? d.key : `${d.name} (${d.key})`}
+              </s-option>
+            ))}
+          </s-select>
+        )}
+
         {/* Shown even with one operator (disabled) so the columns line up. */}
         <s-select
           label="Operator"
           labelAccessibilityVisibility="exclusive"
           value={condition.operator}
-          disabled={definition.operators.length === 1}
+          disabled={operators.length <= 1}
           onChange={(event) =>
             onChange({
               operator: event.currentTarget.value as ConditionOperator,
             })
           }
         >
-          {definition.operators.map((operator) => (
+          {operators.map((operator) => (
             <s-option key={operator} value={operator}>
               {operatorLabel(condition.field, operator)}
             </s-option>
           ))}
         </s-select>
 
-        {definition.valueKind === "text" && (
-          <s-text-field
-            label="Value"
-            labelAccessibilityVisibility="exclusive"
-            placeholder={placeholderFor(condition.field)}
-            value={condition.value}
-            error={error ?? undefined}
-            onInput={(event) => onChange({ value: event.currentTarget.value })}
+        {isMetafield ? (
+          <MetafieldValue
+            condition={condition}
+            metafield={metafield}
+            error={error}
+            onChange={(value) => onChange({ value })}
           />
-        )}
+        ) : (
+          <>
+            {definition.valueKind === "text" && (
+              <s-text-field
+                label="Value"
+                labelAccessibilityVisibility="exclusive"
+                placeholder={placeholderFor(condition.field)}
+                value={condition.value}
+                error={error ?? undefined}
+                onInput={(event) =>
+                  onChange({ value: event.currentTarget.value })
+                }
+              />
+            )}
 
-        {definition.valueKind === "choice" && (
-          <s-select
-            label="Value"
-            labelAccessibilityVisibility="exclusive"
-            value={condition.value}
-            onChange={(event) => onChange({ value: event.currentTarget.value })}
-          >
-            {definition.options?.map((option) => (
-              <s-option key={option.value} value={option.value}>
-                {option.label}
-              </s-option>
-            ))}
-          </s-select>
-        )}
+            {definition.valueKind === "choice" && (
+              <s-select
+                label="Value"
+                labelAccessibilityVisibility="exclusive"
+                value={condition.value}
+                onChange={(event) =>
+                  onChange({ value: event.currentTarget.value })
+                }
+              >
+                {definition.options?.map((option) => (
+                  <s-option key={option.value} value={option.value}>
+                    {option.label}
+                  </s-option>
+                ))}
+              </s-select>
+            )}
 
-        {definition.valueKind === "collection" && (
-          <s-select
-            label="Collection"
-            labelAccessibilityVisibility="exclusive"
-            placeholder="Choose a collection"
-            value={condition.value}
-            onChange={(event) => onChange({ value: event.currentTarget.value })}
-          >
-            {collections.map((collection) => (
-              <s-option key={collection.id} value={collection.id}>
-                {collection.title}
-              </s-option>
-            ))}
-          </s-select>
+            {definition.valueKind === "collection" && (
+              <s-select
+                label="Collection"
+                labelAccessibilityVisibility="exclusive"
+                placeholder="Choose a collection"
+                value={condition.value}
+                onChange={(event) =>
+                  onChange({ value: event.currentTarget.value })
+                }
+              >
+                {collections.map((collection) => (
+                  <s-option key={collection.id} value={collection.id}>
+                    {collection.title}
+                  </s-option>
+                ))}
+              </s-select>
+            )}
+          </>
         )}
 
         <s-button tone="critical" variant="tertiary" onClick={onRemove}>
@@ -596,6 +695,71 @@ function ConditionRow({
         </s-button>
       </s-grid>
     </s-query-container>
+  );
+}
+
+/**
+ * The value input for a metafield condition: true/false for booleans, the
+ * allowed values when the definition limits them, otherwise free text.
+ */
+function MetafieldValue({
+  condition,
+  metafield,
+  error,
+  onChange,
+}: {
+  condition: EditableCondition;
+  metafield: RuleMetafieldDefinition | undefined;
+  error: string | null;
+  onChange: (value: string) => void;
+}) {
+  // "is set" and "is not set" take no value; keep the grid cell filled.
+  if (!condition.metafieldKey || !operatorTakesValue(condition.operator)) {
+    return <s-box />;
+  }
+
+  const kind = metafieldKind(condition.metafieldType);
+  if (kind === "boolean") {
+    return (
+      <s-select
+        label="Value"
+        labelAccessibilityVisibility="exclusive"
+        value={condition.value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      >
+        <s-option value="true">True</s-option>
+        <s-option value="false">False</s-option>
+      </s-select>
+    );
+  }
+
+  if (metafield?.choices && metafield.choices.length > 0) {
+    return (
+      <s-select
+        label="Value"
+        labelAccessibilityVisibility="exclusive"
+        placeholder="Choose a value"
+        value={condition.value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      >
+        {metafield.choices.map((choice) => (
+          <s-option key={choice} value={choice}>
+            {choice}
+          </s-option>
+        ))}
+      </s-select>
+    );
+  }
+
+  return (
+    <s-text-field
+      label="Value"
+      labelAccessibilityVisibility="exclusive"
+      placeholder={kind === "number" ? "e.g. 10" : "Value"}
+      value={condition.value}
+      error={error ?? undefined}
+      onInput={(event) => onChange(event.currentTarget.value)}
+    />
   );
 }
 

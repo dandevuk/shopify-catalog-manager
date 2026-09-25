@@ -92,7 +92,11 @@ shows otherwise:
     branch on collection type; read final membership (`Collection.products`,
     `Product.collections`), which both work on 2026-07. The claude.ai Shopify schema
     tool still showed `ruleSet` and not `sources` in Sep 2026, so it may lag the
-    2026-07 schema: confirm new queries in GraphiQL on 2026-07 as well.
+    2026-07 schema: confirm new queries in GraphiQL on 2026-07 as well. (The local
+    `shopify-dev-mcp` validator, pinned to 2026-07, does know `sources`.)
+18. Editing a product metafield in the admin fires `products/update` and moves
+    `Product.updatedAt` forward, so the products webhook keeps indexed metafields
+    current (metafield conditions test, Sep 2026).
 
 ## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
@@ -151,6 +155,13 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   `includedProducts` for the builder. Text matching ignores case and surrounding spaces;
   an empty include group matches nothing; a rule set with any broken condition isn't
   evaluated at all.
+- `app/lib/product-index/metafields.ts`: which product metafields the index keeps
+  (text, numbers, booleans, lists of text; values up to 1,000 characters), stored in
+  `ProductIndex.metafields` keyed by "namespace.key". Metafield conditions store
+  `Condition.metafieldKey` and `metafieldType`; operators depend on the type
+  (`METAFIELD_OPERATORS`). The builder lists product metafield definitions plus any
+  indexed metafields without one. Rows written before metafields were indexed have
+  none until the next rebuild.
 - `app/routes/app._index.tsx`: Catalogs page. `app.diagnostics.tsx`: Diagnostics page.
   `app.catalogs.$catalogId.tsx`: rule builder with live preview (URL param from
   `app/lib/shopify/catalog-id.ts`, e.g. `MarketCatalog-123`). Saving writes only the

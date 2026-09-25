@@ -49,6 +49,7 @@ describe("toIndexedProduct", () => {
       categoryId: "gid://shopify/TaxonomyCategory/sg-4-17-2-17",
       collectionIds: ["gid://shopify/Collection/9"],
       onlineStorePublished: true,
+      metafields: {},
       shopifyUpdatedAt: new Date("2026-09-24T10:00:00Z"),
     });
   });
@@ -221,5 +222,43 @@ describe("findOnlineStorePublication", () => {
         { id: "gid://shopify/Publication/1", catalog: null },
       ]),
     ).toBeNull();
+  });
+});
+
+describe("metafields", () => {
+  it("attaches supported metafields to their product and drops the rest", () => {
+    const acc = new BulkProductAccumulator();
+    // A child line can arrive before its product.
+    acc.addObject({
+      id: "gid://shopify/Metafield/1",
+      namespace: "custom",
+      key: "trade_tier",
+      type: "single_line_text_field",
+      value: "gold",
+      __parentId: "gid://shopify/Product/1",
+    });
+    acc.addObject(node(1) as unknown as Record<string, unknown>);
+    acc.addObject({
+      id: "gid://shopify/Metafield/2",
+      namespace: "custom",
+      key: "spec",
+      type: "json",
+      value: "{}",
+      __parentId: "gid://shopify/Product/1",
+    });
+    acc.addObject(node(2) as unknown as Record<string, unknown>);
+
+    const [one, two] = acc.products();
+    expect(one.metafields).toEqual({
+      "custom.trade_tier": { type: "single_line_text_field", value: "gold" },
+    });
+    expect(two.metafields).toEqual({});
+  });
+
+  it("are asked for by both queries", () => {
+    expect(buildBulkProductQuery(null)).toMatch(/metafields \{\s+edges/);
+    expect(buildSingleProductQuery(null)).toContain(
+      "metafields(first: 250, after: $metafieldsAfter)",
+    );
   });
 });
