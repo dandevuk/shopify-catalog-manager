@@ -189,22 +189,24 @@ export function matchesCondition(
       );
     }
     case "metafield":
-      return matchesMetafield(product, condition, value);
+      return matchesMetafieldCondition(product.metafields, condition);
   }
 }
 
 /**
- * A product without the metafield (or with an empty one) is "not set". Like a
- * missing vendor, it matches "is not" and "doesn't contain", and nothing else
- * that compares a value.
+ * A metafield holder without the metafield (or with an empty one) is "not
+ * set". Like a missing vendor, it matches "is not" and "doesn't contain", and
+ * nothing else that compares a value. Shared with the assignment evaluator
+ * (`app/lib/assignment/evaluate.ts`, Phase 2): company and location
+ * metafields are indexed the same way as product metafields.
  */
-function matchesMetafield(
-  product: RuleProduct,
-  condition: ValidCondition,
-  value: string,
+export function matchesMetafieldCondition(
+  metafields: IndexedMetafields | null | undefined,
+  condition: Pick<ValidCondition, "operator" | "value" | "metafieldKey" | "metafieldType">,
 ): boolean {
+  const value = condition.value.trim();
   const kind = metafieldKind(condition.metafieldType ?? "");
-  const metafield = product.metafields?.[condition.metafieldKey ?? ""];
+  const metafield = metafields?.[condition.metafieldKey ?? ""];
   const items = kind === "list" && metafield ? listItems(metafield.value) : [];
   const isSet =
     metafield !== undefined &&

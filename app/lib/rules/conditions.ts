@@ -190,9 +190,11 @@ export function operatorTakesValue(operator: ConditionOperator): boolean {
 
 /**
  * Operator wording. Some read differently per field: a product is "in" a
- * collection but a vendor "is" a value.
+ * collection but a vendor "is" a value. Exported for the assignment
+ * evaluator's conditions (`app/lib/assignment/conditions.ts`, Phase 2),
+ * which are metafield-only and need no per-field overrides.
  */
-const OPERATOR_LABELS: Record<ConditionOperator, string> = {
+export const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   equals: "is",
   not_equals: "is not",
   contains: "contains",

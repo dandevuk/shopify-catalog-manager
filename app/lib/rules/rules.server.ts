@@ -127,7 +127,7 @@ export async function loadRules(
   catalogRecordId: string,
 ): Promise<SavedRules | null> {
   const ruleSet = await prisma.ruleSet.findUnique({
-    where: { catalogId: catalogRecordId },
+    where: { catalogId_kind: { catalogId: catalogRecordId, kind: "CATALOG" } },
     include: { conditions: { orderBy: { position: "asc" } } },
   });
   if (!ruleSet) return null;
@@ -161,7 +161,7 @@ export async function saveRules(
 
   await prisma.$transaction(async (tx) => {
     const ruleSet = await tx.ruleSet.upsert({
-      where: { catalogId: catalogRecordId },
+      where: { catalogId_kind: { catalogId: catalogRecordId, kind: "CATALOG" } },
       create: {
         shopId,
         kind: "CATALOG",

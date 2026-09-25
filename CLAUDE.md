@@ -163,6 +163,10 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   `includedProducts` for the builder. Text matching ignores case and surrounding spaces;
   an empty include group matches nothing; a rule set with any broken condition isn't
   evaluated at all.
+- `app/lib/assignment/conditions.ts`, `evaluate.ts` (Phase 2): B2B catalog assignment
+  rules. Metafield-only conditions (`company_metafield`, `location_metafield`) and an
+  evaluator that decides which company locations get access to a catalog, mirroring
+  `app/lib/rules` but with no exclude group or overrides (assignment is additive only).
 - `app/lib/product-index/metafields.ts`: which product metafields the index keeps
   (text, numbers, booleans, lists of text; values up to 1,000 characters), stored in
   `ProductIndex.metafields` keyed by "namespace.key". Metafield conditions store
@@ -230,30 +234,69 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    effect immediately. Requires `npm run worker` running (a separate terminal in dev);
    syncs no longer run in-process on the web server.
 
-## Planned features (not yet scheduled)
+## Phase 2 next steps
 
-**B2B catalog assignment rules** (idea from Dan, Sep 2026). **Decided: the first feature
-after Phase 1, using company and location data only** (metafields); no customer segments
-or customer tags for now, so the app stays clear of customer data. Today a merchant assigns a
-B2B catalog to each company location by hand. The app could show every assignment and
-assign catalogs automatically from rules, e.g. "locations whose company has
-`custom.customer_type = wholesale` get the Wholesale catalog". Checked against the
+**B2B catalog assignment rules** (idea from Dan, Sep 2026, started Sep 2026). Today a
+merchant assigns a B2B catalog to each company location by hand. The app shows every
+assignment and assigns catalogs automatically from rules, e.g. "locations whose company
+has `custom.customer_type = wholesale` get the Wholesale catalog". Checked against the
 2026-07 schema:
 
 - Assign with `catalogContextUpdate(catalogId, contextsToAdd/contextsToRemove:
-  { companyLocationIds })`. Needs **`write_products`** (not requested today).
+  { companyLocationIds })`. Needs **`write_products`** (not requested today): adding the
+  scope means an existing install's merchant must re-consent (scope update flow).
 - Rule data: `Company.metafields` and `CompanyLocation.metafields` (with
   `read_companies`). Companies and locations have **no tags** field.
 - A catalog's contexts can only be markets or company locations: there is **no
-  customer segment or customer tag context**. Assigning by segment or customer tag would
-  mean mapping customers (company contacts) to locations, which needs `read_customers`
-  (protected customer data). That reverses the current "no customer data" stance, so
-  decide deliberately.
-- Reacting to new locations needs `company_locations/*` webhooks (protected customer
-  data) or a scheduled scan of company locations.
+  customer segment or customer tag context**, so assigning by segment/customer tag
+  (which needs `read_customers`, protected customer data) stays out of scope.
 - Only Plus shops can have `CompanyLocationCatalog`s (finding 11), so this is a Plus
   feature.
+
+Design decisions (Sep 2026):
+
+- **A location can match more than one catalog.** No "exactly one winner" rule: rules
+  are evaluated independently per catalog, same as product rules today, so a location
+  simply gets added wherever it matches.
+- **Additive only, never reconciled.** Applying rules only adds `CompanyLocationCatalog`
+  contexts for locations that match; it never removes a context a merchant (or a
+  previous rule run) already set, even if no rule currently matches it. No "drift"
+  concept here, unlike managed mode's product sync.
+- **Manual apply first.** Ship preview + a merchant-confirmed "Apply assignments" action
+  (same shape as managed mode's original step 4); a scheduled automatic re-scan is a
+  later step once manual is tested, not built in the same phase. `company_locations/*`
+  webhooks stay unused (protected customer data): reacting to new locations means a
+  scheduled scan, not a webhook.
+- **Reuse the existing rule engine.** Company/location counts are far smaller than
+  product counts, so v1 reads them live (paginated GraphQL) at preview/apply time rather
+  than building a bulk index like the product index.
 - Record the plan change in the claude.ai project plan too (it's the working copy).
+
+Steps:
+
+1. ~~Data model and evaluator~~: done and tested (Sep 2026), not yet on the dev store.
+   Added `ASSIGNMENT` to `RuleSetKind` (alongside `CATALOG`/`TEMPLATE`), so a
+   `COMPANY_LOCATION` catalog can hold two independent rule sets: the existing product
+   include/exclude rules (which products the catalog contains), and a new assignment
+   rule set (which company locations get access to it). `RuleSet`'s `@unique` on
+   `catalogId` widened to `@@unique([catalogId, kind])`. The assignment rule set only
+   has an include group for v1 (no exclude), with its own field vocabulary
+   (`company_metafield`, `location_metafield`, both metafield-only per the "no tags"
+   finding above): `app/lib/assignment/conditions.ts`, `evaluate.ts`. The metafield
+   matching itself is shared with product rules (`matchesMetafieldCondition`, exported
+   from `app/lib/rules/evaluate.ts`): company and location metafields are indexed the
+   same shape as product metafields (`IndexedMetafields`).
+2. Data layer: live paginated reads for companies, locations, their metafields, and each
+   location's current catalog contexts (`company.locations`,
+   `CompanyLocation.metafields`, `CompanyLocation.catalogs` or equivalent).
+3. Rule builder UI and a preview page (locations, their current contexts, what the rules
+   would assign), reusing the product rule builder's shape where it fits.
+4. Apply: `catalogContextUpdate`, additive only (per the design decision above). Needs
+   the `write_products` scope added and the existing-install re-consent flow.
+5. Automatic re-scan (later step, same shape as the job queue): a scheduled scan, no
+   `company_locations/*` webhooks.
+
+## Planned features (not yet scheduled)
 
 **Sidekick integration** (idea from Dan, Sep 2026). **Decided: a requirement**, not
 optional. Goal: a merchant can type a prompt like "make a catalog for VIP users, company
