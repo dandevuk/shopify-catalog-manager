@@ -9,6 +9,7 @@ import {
   useFetcher,
   useLoaderData,
   useNavigate,
+  useParams,
   useRevalidator,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -335,6 +336,7 @@ export default function RuleBuilderPage() {
     syncStatus,
     hasSavedRules,
   } = useLoaderData<typeof loader>();
+  const { catalogId: catalogParam = "" } = useParams();
   const navigate = useNavigate();
   const previewFetcher = useFetcher<typeof action>();
   const saveFetcher = useFetcher<typeof action>();
@@ -509,7 +511,11 @@ export default function RuleBuilderPage() {
         </s-stack>
       </s-section>
 
-      <ApplySection status={syncStatus} dirty={dirty} />
+      <ApplySection
+        status={syncStatus}
+        dirty={dirty}
+        catalogParam={catalogParam}
+      />
 
       <PreviewSection
         isB2B={catalog.type === "COMPANY_LOCATION"}
@@ -529,29 +535,53 @@ export default function RuleBuilderPage() {
 function ApplySection({
   status,
   dirty,
+  catalogParam,
 }: {
   status: SyncStatus;
   dirty: boolean;
+  /** The catalog's URL param, for the progress route */
+  catalogParam: string;
 }) {
   const reviewFetcher = useFetcher<typeof action>();
   const startFetcher = useFetcher<typeof action>();
   const stopFetcher = useFetcher<typeof action>();
+  const progressFetcher = useFetcher<SyncStatus>();
   const revalidator = useRevalidator();
   const [ticked, setTicked] = useState<Confirmation["kind"][]>([]);
   const [confirmingStop, setConfirmingStop] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
 
-  const job = status.latestJob;
-  const running = job?.status === "RUNNING" || job?.status === "QUEUED";
+  const running =
+    status.latestJob?.status === "RUNNING" ||
+    status.latestJob?.status === "QUEUED";
+  // While running, show the polled progress; otherwise the page's own data.
+  const job = (running && progressFetcher.data?.latestJob) || status.latestJob;
+  const progressUrl = `/app/sync-status/${catalogParam}`;
 
-  // While a sync runs, refresh its progress every two seconds.
+  // While a sync runs, poll the lightweight progress route every two seconds
+  // (not the page loader, which queries Shopify).
   useEffect(() => {
     if (!running) return;
-    const timer = setInterval(() => revalidator.revalidate(), 2000);
+    const timer = setInterval(() => progressFetcher.load(progressUrl), 2000);
     return () => clearInterval(timer);
-    // revalidator.revalidate is stable enough; the running flag is what matters.
+    // progressFetcher.load is stable enough; running and the URL are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running]);
+  }, [running, progressUrl]);
+
+  // When the sync finishes, reload the page once for the final state.
+  const polledStatus = progressFetcher.data?.latestJob?.status;
+  useEffect(() => {
+    if (
+      running &&
+      polledStatus &&
+      polledStatus !== "RUNNING" &&
+      polledStatus !== "QUEUED"
+    ) {
+      revalidator.revalidate();
+    }
+    // revalidator.revalidate is stable enough; the polled status is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polledStatus, running]);
 
   const review =
     reviewFetcher.data?.intent === "sync-preview"

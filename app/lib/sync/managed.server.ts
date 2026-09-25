@@ -191,6 +191,15 @@ async function planFromSavedRules(
     };
   }
 
+  if (catalog.publicationId && current === null) {
+    // The publication was deleted or swapped since the page loaded. Never
+    // read that as "every product": the plan would be wrong, and every update
+    // would go to a publication that no longer exists.
+    return {
+      error:
+        "This catalog's product list changed in Shopify (it was removed or replaced). Reload the page and review again.",
+    };
+  }
   const currentIds = current ?? products.map((p) => p.productId);
   return {
     plan: planSync(evaluation.productIds, currentIds),
@@ -302,34 +311,54 @@ export async function startSync(
   const problem = checkAcknowledgement(planned.plan, acknowledgement);
   if (problem) return { ok: false, error: problem };
 
-  // Claim the catalog: only one sync at a time.
-  const job = await prisma.$transaction(async (tx) => {
+  const job = await claimCatalog(catalog.recordId);
+  if (!job)
+    return { ok: false, error: "A sync is already running for this catalog." };
+
+  // Runs after the response; the page polls the job for progress.
+  activeJobs.add(job.id);
+  void runSync(admin, shopId, catalog, job.id, acknowledgement)
+    .catch(async (error) => {
+      try {
+        await finishJob(job.id, "FAILED", describeError(error));
+      } catch (recordError) {
+        // Nothing left to tell; don't let this crash the server.
+        console.error(
+          `Couldn't record sync ${job.id} as failed`,
+          error,
+          recordError,
+        );
+      }
+    })
+    .finally(() => activeJobs.delete(job.id));
+  return { ok: true, jobId: job.id };
+}
+
+/**
+ * Creates a running SyncJob for the catalog, or returns null if one is
+ * already running: only one sync per catalog at a time. Locking the
+ * catalog's row makes two starts at the same moment queue up here, so the
+ * second one sees the first one's job.
+ */
+export async function claimCatalog(catalogRecordId: string) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Catalog" WHERE "id" = ${catalogRecordId} FOR UPDATE`;
     const busy = await tx.syncJob.findFirst({
       where: {
-        catalogId: catalog.recordId,
+        catalogId: catalogRecordId,
         status: { in: ["QUEUED", "RUNNING"] },
       },
     });
     if (busy) return null;
     return tx.syncJob.create({
       data: {
-        catalogId: catalog.recordId,
+        catalogId: catalogRecordId,
         cause: "MANUAL",
         status: "RUNNING",
         startedAt: new Date(),
       },
     });
   });
-  if (!job)
-    return { ok: false, error: "A sync is already running for this catalog." };
-
-  // Runs after the response; the page polls the job for progress.
-  void runSync(admin, shopId, catalog, job.id, acknowledgement).catch(
-    async (error) => {
-      await finishJob(job.id, "FAILED", describeError(error));
-    },
-  );
-  return { ok: true, jobId: job.id };
 }
 
 async function runSync(
@@ -417,8 +446,10 @@ async function runSync(
   });
   forgetCatalogMembership(publicationId);
 
-  // 5. The catalog is managed now. Record the state Shopify reports after the
-  // sync as the baseline for spotting admin edits later (finding 2).
+  // 5. Record the state Shopify reports after the sync as the baseline for
+  // spotting admin edits later (finding 2). The catalog only counts as
+  // managed and synced if Shopify accepted every change; otherwise the job
+  // fails and the merchant can review and try again.
   const state = await runGraphql<{
     catalog: {
       operations: { id: string }[];
@@ -428,11 +459,11 @@ async function runSync(
       } | null;
     } | null;
   }>(admin, CATALOG_STATE, { id: catalog.shopifyCatalogId });
+  const clean = result.failed.length === 0;
   await prisma.catalog.update({
     where: { id: catalog.recordId },
     data: {
-      managed: true,
-      lastSyncedAt: new Date(),
+      ...(clean ? { managed: true, lastSyncedAt: new Date() } : {}),
       lastOperationId: state.data.catalog?.operations[0]?.id ?? null,
       lastKnownCount:
         state.data.catalog?.publication?.includedProductsCount?.count ?? null,
@@ -440,15 +471,18 @@ async function runSync(
     },
   });
 
+  if (clean) {
+    await finishJob(jobId, "SUCCEEDED", null);
+    return;
+  }
   const failures = result.failed.map(
     (f) => `${f.action} ${f.productId}: ${f.error}`,
   );
+  const applied = result.added.length + result.removed.length;
   await finishJob(
     jobId,
-    "SUCCEEDED",
-    failures.length > 0
-      ? `${failures.length} changes Shopify didn't accept: ${failures.join(" | ")}`
-      : null,
+    "FAILED",
+    `${applied} changes applied, ${failures.length} rejected by Shopify: ${failures.join(" | ")}`,
   );
 }
 
@@ -490,13 +524,14 @@ async function createPublication(
   );
 }
 
-async function finishJob(
+export async function finishJob(
   jobId: string,
   status: "SUCCEEDED" | "FAILED" | "PAUSED",
   error: string | null,
 ): Promise<void> {
-  await prisma.syncJob.update({
-    where: { id: jobId },
+  // Only a job that's still going: a finished one keeps its outcome.
+  await prisma.syncJob.updateMany({
+    where: { id: jobId, status: { in: ["QUEUED", "RUNNING"] } },
     data: { status, error, finishedAt: new Date() },
   });
 }
@@ -505,8 +540,14 @@ async function finishJob(
 // Status and stopping
 // ---------------------------------------------------------------------------
 
-/** A job still "running" after this long was interrupted (e.g. a restart). */
+/**
+ * A job still "running" after this long, that this process isn't running,
+ * was interrupted (e.g. by a restart).
+ */
 const STALE_JOB_MS = 60 * 60_000;
+
+/** Syncs running in this process. In-process until the queue (step 5). */
+const activeJobs = new Set<string>();
 
 async function runningJob(catalogRecordId: string) {
   const job = await prisma.syncJob.findFirst({
@@ -517,6 +558,7 @@ async function runningJob(catalogRecordId: string) {
   });
   if (
     job &&
+    !activeJobs.has(job.id) &&
     Date.now() - (job.startedAt ?? job.createdAt).getTime() > STALE_JOB_MS
   ) {
     await finishJob(

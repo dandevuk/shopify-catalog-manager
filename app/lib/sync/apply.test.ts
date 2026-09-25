@@ -153,6 +153,35 @@ describe("applyChunks", () => {
   });
 });
 
+describe("rejected-call limit", () => {
+  it("stops a sync whose calls Shopify keeps rejecting, instead of splitting forever", async () => {
+    // Every product rejected, as when the publication itself is gone.
+    const add = Array.from({ length: 50 }, (_, i) => `p${i}`);
+    const { admin, calls } = fakeAdmin({ rejected: add });
+    await expect(
+      applyChunks(admin, "gid://shopify/Publication/1", [{ add, remove: [] }], {
+        sleep: noWait,
+        maxRejectedCalls: 10,
+      }),
+    ).rejects.toThrow(/Shopify kept rejecting changes/);
+    // The limit plus the call that went over it, not about 100 calls.
+    expect(calls.length).toBe(11);
+  });
+
+  it("still isolates a few bad products within the limit", async () => {
+    const add = Array.from({ length: 50 }, (_, i) => `p${i}`);
+    const { admin } = fakeAdmin({ rejected: ["p3", "p40"] });
+    const result = await applyChunks(
+      admin,
+      "gid://shopify/Publication/1",
+      [{ add, remove: [] }],
+      { sleep: noWait },
+    );
+    expect(result.failed.map((f) => f.productId).sort()).toEqual(["p3", "p40"]);
+    expect(result.added).toHaveLength(48);
+  });
+});
+
 describe("splitChunk", () => {
   it("halves the changes, keeping adds and removes apart", () => {
     expect(splitChunk({ add: ["a1", "a2", "a3"], remove: ["r1"] })).toEqual([

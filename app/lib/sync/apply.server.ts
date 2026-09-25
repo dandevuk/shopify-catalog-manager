@@ -60,6 +60,13 @@ export interface ApplyOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Attempts per call when Shopify throttles or the request fails */
   maxAttempts?: number;
+  /**
+   * Rejected calls allowed per sync before giving up. Isolating one bad
+   * product takes about 8 rejected calls, but an error that isn't about a
+   * product (e.g. the publication is gone) fails every half, so without a
+   * limit it would cost about two calls per product.
+   */
+  maxRejectedCalls?: number;
 }
 
 /** Below this many query cost points left, wait for the bucket to refill. */
@@ -72,8 +79,9 @@ export async function applyChunks(
   options: ApplyOptions = {},
 ): Promise<ApplyResult> {
   const result: ApplyResult = { added: [], removed: [], failed: [] };
+  const budget = { rejectedCallsLeft: options.maxRejectedCalls ?? 40 };
   for (const chunk of chunks) {
-    await applyChunk(admin, publicationId, chunk, result, options);
+    await applyChunk(admin, publicationId, chunk, result, options, budget);
   }
   return result;
 }
@@ -84,6 +92,7 @@ async function applyChunk(
   chunk: PublicationUpdateChunk,
   result: ApplyResult,
   options: ApplyOptions,
+  budget: { rejectedCallsLeft: number },
 ): Promise<void> {
   if (chunk.add.length === 0 && chunk.remove.length === 0) return;
 
@@ -95,7 +104,17 @@ async function applyChunk(
     return;
   }
 
-  // Rejected. A single change can't be split further: record it as failed.
+  // Rejected. Stop if Shopify keeps rejecting: the problem isn't one product.
+  budget.rejectedCallsLeft--;
+  if (budget.rejectedCallsLeft < 0) {
+    throw new Error(
+      `Shopify kept rejecting changes, so the sync stopped: ${userErrors
+        .map((e) => `${e.code ?? "ERROR"}: ${e.message}`)
+        .join("; ")}`,
+    );
+  }
+
+  // A single change can't be split further: record it as failed.
   const size = chunk.add.length + chunk.remove.length;
   if (size === 1) {
     const error = userErrors
@@ -114,7 +133,7 @@ async function applyChunk(
 
   // Otherwise try each half, to isolate the change Shopify won't accept.
   for (const half of splitChunk(chunk)) {
-    await applyChunk(admin, publicationId, half, result, options);
+    await applyChunk(admin, publicationId, half, result, options, budget);
   }
 }
 
