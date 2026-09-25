@@ -23,7 +23,8 @@ const node = (id: number, extra: Partial<ProductNode> = {}): ProductNode => ({
   ...extra,
 });
 
-const jsonl = (...objects: object[]) => objects.map((o) => JSON.stringify(o)).join("\n");
+const jsonl = (...objects: object[]) =>
+  objects.map((o) => JSON.stringify(o)).join("\n");
 
 async function* chunksOf(...chunks: string[]) {
   for (const chunk of chunks) yield chunk;
@@ -48,12 +49,16 @@ describe("toIndexedProduct", () => {
       categoryId: "gid://shopify/TaxonomyCategory/sg-4-17-2-17",
       collectionIds: ["gid://shopify/Collection/9"],
       onlineStorePublished: true,
+      metafields: {},
       shopifyUpdatedAt: new Date("2026-09-24T10:00:00Z"),
     });
   });
 
   it("stores empty vendor and product type as null, and no category as null", () => {
-    const row = toIndexedProduct(node(1, { vendor: "", productType: "", category: null }), []);
+    const row = toIndexedProduct(
+      node(1, { vendor: "", productType: "", category: null }),
+      [],
+    );
     expect(row.vendor).toBeNull();
     expect(row.productType).toBeNull();
     expect(row.categoryId).toBeNull();
@@ -66,7 +71,10 @@ describe("toIndexedProduct", () => {
   });
 
   it("removes duplicate collection IDs", () => {
-    const row = toIndexedProduct(node(1), ["gid://shopify/Collection/9", "gid://shopify/Collection/9"]);
+    const row = toIndexedProduct(node(1), [
+      "gid://shopify/Collection/9",
+      "gid://shopify/Collection/9",
+    ]);
     expect(row.collectionIds).toEqual(["gid://shopify/Collection/9"]);
   });
 });
@@ -76,33 +84,48 @@ describe("BulkProductAccumulator", () => {
     const acc = new BulkProductAccumulator();
     const text = jsonl(
       node(1),
-      { id: "gid://shopify/Collection/9", __parentId: "gid://shopify/Product/1" },
-      { id: "gid://shopify/Collection/10", __parentId: "gid://shopify/Product/1" },
+      {
+        id: "gid://shopify/Collection/9",
+        __parentId: "gid://shopify/Product/1",
+      },
+      {
+        id: "gid://shopify/Collection/10",
+        __parentId: "gid://shopify/Product/1",
+      },
       node(2),
     );
     text.split("\n").forEach((line) => acc.addLine(line));
 
     const rows = acc.products();
     expect(acc.productCount).toBe(2);
-    expect(rows.find((r) => r.productId.endsWith("/1"))?.collectionIds).toEqual([
-      "gid://shopify/Collection/9",
-      "gid://shopify/Collection/10",
-    ]);
-    expect(rows.find((r) => r.productId.endsWith("/2"))?.collectionIds).toEqual([]);
+    expect(rows.find((r) => r.productId.endsWith("/1"))?.collectionIds).toEqual(
+      ["gid://shopify/Collection/9", "gid://shopify/Collection/10"],
+    );
+    expect(rows.find((r) => r.productId.endsWith("/2"))?.collectionIds).toEqual(
+      [],
+    );
   });
 
   it("handles a child line that arrives before its product", () => {
     const acc = new BulkProductAccumulator();
-    acc.addObject({ id: "gid://shopify/Collection/9", __parentId: "gid://shopify/Product/1" });
+    acc.addObject({
+      id: "gid://shopify/Collection/9",
+      __parentId: "gid://shopify/Product/1",
+    });
     acc.addObject(node(1) as unknown as Record<string, unknown>);
-    expect(acc.products()[0].collectionIds).toEqual(["gid://shopify/Collection/9"]);
+    expect(acc.products()[0].collectionIds).toEqual([
+      "gid://shopify/Collection/9",
+    ]);
   });
 
   it("ignores blank lines and objects it doesn't know", () => {
     const acc = new BulkProductAccumulator();
     acc.addLine("");
     acc.addLine("   ");
-    acc.addObject({ id: "gid://shopify/ProductVariant/5", __parentId: "gid://shopify/Product/1" });
+    acc.addObject({
+      id: "gid://shopify/ProductVariant/5",
+      __parentId: "gid://shopify/Product/1",
+    });
     acc.addObject({ id: "gid://shopify/Collection/5" });
     acc.addObject({ title: "no id" });
     expect(acc.products()).toEqual([]);
@@ -115,11 +138,11 @@ describe("BulkProductAccumulator", () => {
 
 describe("splitLines", () => {
   it("splits lines that cross chunk boundaries", async () => {
-    expect(await collect(splitLines(chunksOf('{"a":', '1}\n{"b"', ":2}\n", '{"c":3}')))).toEqual([
-      '{"a":1}',
-      '{"b":2}',
-      '{"c":3}',
-    ]);
+    expect(
+      await collect(
+        splitLines(chunksOf('{"a":', '1}\n{"b"', ":2}\n", '{"c":3}')),
+      ),
+    ).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
   });
 
   it("doesn't yield an empty line for a trailing newline", async () => {
@@ -135,11 +158,15 @@ describe("query builders", () => {
       `publishedOnPublication(publicationId: "${publicationId}")`,
     );
     expect(buildBulkProductQuery(null)).not.toContain("publishedOnPublication");
-    expect(buildSingleProductQuery(null)).not.toContain("publishedOnPublication");
+    expect(buildSingleProductQuery(null)).not.toContain(
+      "publishedOnPublication",
+    );
   });
 
   it("rejects anything that isn't a publication GID", () => {
-    expect(() => buildBulkProductQuery('gid://shopify/Publication/1") { id } #')).toThrow();
+    expect(() =>
+      buildBulkProductQuery('gid://shopify/Publication/1") { id } #'),
+    ).toThrow();
   });
 });
 
@@ -147,8 +174,14 @@ describe("findOnlineStorePublication", () => {
   it("finds the Online Store by catalog title", () => {
     expect(
       findOnlineStorePublication([
-        { id: "gid://shopify/Publication/1", catalog: { title: "Point of Sale" } },
-        { id: "gid://shopify/Publication/2", catalog: { title: "Online Store" } },
+        {
+          id: "gid://shopify/Publication/1",
+          catalog: { title: "Point of Sale" },
+        },
+        {
+          id: "gid://shopify/Publication/2",
+          catalog: { title: "Online Store" },
+        },
       ]),
     ).toBe("gid://shopify/Publication/2");
   });
@@ -175,12 +208,57 @@ describe("findOnlineStorePublication", () => {
   it("doesn't match a channel that only mentions the Online Store", () => {
     expect(
       findOnlineStorePublication([
-        { id: "gid://shopify/Publication/1", catalog: { title: "Online Store Helper" } },
+        {
+          id: "gid://shopify/Publication/1",
+          catalog: { title: "Online Store Helper" },
+        },
       ]),
     ).toBeNull();
   });
 
   it("returns null when the shop has no Online Store channel", () => {
-    expect(findOnlineStorePublication([{ id: "gid://shopify/Publication/1", catalog: null }])).toBeNull();
+    expect(
+      findOnlineStorePublication([
+        { id: "gid://shopify/Publication/1", catalog: null },
+      ]),
+    ).toBeNull();
+  });
+});
+
+describe("metafields", () => {
+  it("attaches supported metafields to their product and drops the rest", () => {
+    const acc = new BulkProductAccumulator();
+    // A child line can arrive before its product.
+    acc.addObject({
+      id: "gid://shopify/Metafield/1",
+      namespace: "custom",
+      key: "trade_tier",
+      type: "single_line_text_field",
+      value: "gold",
+      __parentId: "gid://shopify/Product/1",
+    });
+    acc.addObject(node(1) as unknown as Record<string, unknown>);
+    acc.addObject({
+      id: "gid://shopify/Metafield/2",
+      namespace: "custom",
+      key: "spec",
+      type: "json",
+      value: "{}",
+      __parentId: "gid://shopify/Product/1",
+    });
+    acc.addObject(node(2) as unknown as Record<string, unknown>);
+
+    const [one, two] = acc.products();
+    expect(one.metafields).toEqual({
+      "custom.trade_tier": { type: "single_line_text_field", value: "gold" },
+    });
+    expect(two.metafields).toEqual({});
+  });
+
+  it("are asked for by both queries", () => {
+    expect(buildBulkProductQuery(null)).toMatch(/metafields \{\s+edges/);
+    expect(buildSingleProductQuery(null)).toContain(
+      "metafields(first: 250, after: $metafieldsAfter)",
+    );
   });
 });

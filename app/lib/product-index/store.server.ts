@@ -13,7 +13,7 @@ import type { IndexedProduct } from "./products";
  * can't express "update only if", so this uses INSERT ... ON CONFLICT directly.
  */
 
-/** 500 rows x 14 values stays well under Postgres's 65,535 parameter limit. */
+/** 500 rows x 15 values stays well under Postgres's 65,535 parameter limit. */
 const BATCH_SIZE = 500;
 
 /**
@@ -46,7 +46,7 @@ export async function upsertProducts(
         ${shopId}, ${p.productId}, ${p.title}, ${p.handle}::text, ${p.status},
         ${p.vendor}::text, ${p.productType}::text, ${p.tags}::text[], ${p.categoryId}::text,
         ${p.collectionIds}::text[], ${utc(collectionsReadAt)}, ${p.onlineStorePublished},
-        ${utc(p.shopifyUpdatedAt)}, ${utc(writtenAt)}
+        ${JSON.stringify(p.metafields)}::jsonb, ${utc(p.shopifyUpdatedAt)}, ${utc(writtenAt)}
       )`,
     );
 
@@ -55,7 +55,7 @@ export async function upsertProducts(
         "shopId", "productId", "title", "handle", "status",
         "vendor", "productType", "tags", "categoryId",
         "collectionIds", "collectionsReadAt", "onlineStorePublished",
-        "shopifyUpdatedAt", "updatedAt"
+        "metafields", "shopifyUpdatedAt", "updatedAt"
       )
       VALUES ${Prisma.join(rows)}
       ON CONFLICT ("shopId", "productId") DO UPDATE SET
@@ -75,6 +75,7 @@ export async function upsertProducts(
         END,
         "collectionsReadAt" = GREATEST("ProductIndex"."collectionsReadAt", EXCLUDED."collectionsReadAt"),
         "onlineStorePublished" = EXCLUDED."onlineStorePublished",
+        "metafields" = EXCLUDED."metafields",
         "shopifyUpdatedAt" = EXCLUDED."shopifyUpdatedAt",
         "updatedAt" = EXCLUDED."updatedAt"
       WHERE "ProductIndex"."shopifyUpdatedAt" IS NULL

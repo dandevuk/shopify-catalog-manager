@@ -162,6 +162,10 @@ model Condition {
   operator              String
   value                 String?
   metafieldDefinitionId String?
+  /// Metafield conditions: "namespace.key", e.g. "custom.trade_tier"
+  metafieldKey          String?
+  /// Metafield conditions: the definition's type, e.g. "number_integer"
+  metafieldType         String?
   position              Int            @default(0)
 
   ruleSet RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)

@@ -6,6 +6,8 @@
  * (products.test.ts).
  */
 
+import { pickMetafields, type IndexedMetafields } from "./metafields";
+
 /** One row of the index, as the app stores it (see ProductIndex in the Prisma schema). */
 export interface IndexedProduct {
   productId: string;
@@ -18,7 +20,17 @@ export interface IndexedProduct {
   categoryId: string | null;
   collectionIds: string[];
   onlineStorePublished: boolean;
+  /** Metafields rules can test (see metafields.ts) */
+  metafields: IndexedMetafields;
   shopifyUpdatedAt: Date;
+}
+
+/** A metafield as the queries return it. */
+export interface MetafieldNode {
+  namespace: string;
+  key: string;
+  type: string;
+  value: string | null;
 }
 
 /** Product fields as the bulk query and the single product query return them. */
@@ -38,6 +50,7 @@ export interface ProductNode {
 
 const PRODUCT_GID = "gid://shopify/Product/";
 const COLLECTION_GID = "gid://shopify/Collection/";
+const METAFIELD_GID = "gid://shopify/Metafield/";
 
 /**
  * Scalar product fields shared by the bulk query and the single product query.
@@ -46,7 +59,10 @@ const COLLECTION_GID = "gid://shopify/Collection/";
  * value is written into the query text.
  */
 function productFields(onlineStorePublicationId: string | null): string {
-  if (onlineStorePublicationId && !/^gid:\/\/shopify\/Publication\/\d+$/.test(onlineStorePublicationId)) {
+  if (
+    onlineStorePublicationId &&
+    !/^gid:\/\/shopify\/Publication\/\d+$/.test(onlineStorePublicationId)
+  ) {
     throw new Error(`Not a publication ID: ${onlineStorePublicationId}`);
   }
   return `
@@ -70,11 +86,13 @@ function productFields(onlineStorePublicationId: string | null): string {
 
 /**
  * The query the bulk operation runs. Bulk queries don't take `first`: Shopify
- * pages through every product itself. The nested `collections` connection
- * comes back as separate JSONL lines with a `__parentId` (see
- * BulkProductAccumulator).
+ * pages through every product itself. The nested `collections` and
+ * `metafields` connections come back as separate JSONL lines with a
+ * `__parentId` (see BulkProductAccumulator).
  */
-export function buildBulkProductQuery(onlineStorePublicationId: string | null): string {
+export function buildBulkProductQuery(
+  onlineStorePublicationId: string | null,
+): string {
   return `{
   products {
     edges {
@@ -86,20 +104,49 @@ export function buildBulkProductQuery(onlineStorePublicationId: string | null): 
             }
           }
         }
+        metafields {
+          edges {
+            node {
+              id
+              namespace
+              key
+              type
+              value
+            }
+          }
+        }
       }
     }
   }
 }`;
 }
 
-/** One product, used by the products/create and products/update webhooks. */
-export function buildSingleProductQuery(onlineStorePublicationId: string | null): string {
+/**
+ * One product, used by the products/create and products/update webhooks.
+ * Collections and metafields page separately; once one runs out, passing its
+ * last cursor again returns an empty page.
+ */
+export function buildSingleProductQuery(
+  onlineStorePublicationId: string | null,
+): string {
   return `#graphql
-  query ProductIndexProduct($id: ID!, $collectionsAfter: String) {
+  query ProductIndexProduct($id: ID!, $collectionsAfter: String, $metafieldsAfter: String) {
     product(id: $id) {${productFields(onlineStorePublicationId)}
       collections(first: 250, after: $collectionsAfter) {
         nodes {
           id
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      metafields(first: 250, after: $metafieldsAfter) {
+        nodes {
+          namespace
+          key
+          type
+          value
         }
         pageInfo {
           hasNextPage
@@ -115,7 +162,11 @@ function blankToNull(value: string | null | undefined): string | null {
   return value ? value : null;
 }
 
-export function toIndexedProduct(node: ProductNode, collectionIds: string[]): IndexedProduct {
+export function toIndexedProduct(
+  node: ProductNode,
+  collectionIds: string[],
+  metafields: MetafieldNode[] = [],
+): IndexedProduct {
   return {
     productId: node.id,
     title: node.title,
@@ -127,6 +178,7 @@ export function toIndexedProduct(node: ProductNode, collectionIds: string[]): In
     categoryId: node.category?.id ?? null,
     collectionIds: [...new Set(collectionIds)],
     onlineStorePublished: node.publishedOnPublication ?? false,
+    metafields: pickMetafields(metafields),
     shopifyUpdatedAt: new Date(node.updatedAt),
   };
 }
@@ -139,13 +191,16 @@ export function toIndexedProduct(node: ProductNode, collectionIds: string[]): In
  *
  *   {"id":"gid://shopify/Product/1","title":"Board",...}
  *   {"id":"gid://shopify/Collection/9","__parentId":"gid://shopify/Product/1"}
+ *   {"id":"gid://shopify/Metafield/5","namespace":"custom",...,"__parentId":"gid://shopify/Product/1"}
  *
  * Children aren't guaranteed to follow their parent directly, so collection
- * IDs are gathered separately and joined up in `products()`.
+ * IDs and metafields are gathered separately and joined up in `products()`.
+ * Metafields rules can't use are dropped as they arrive, to keep memory down.
  */
 export class BulkProductAccumulator {
   private readonly nodes = new Map<string, ProductNode>();
   private readonly collections = new Map<string, string[]>();
+  private readonly metafields = new Map<string, MetafieldNode[]>();
 
   addLine(line: string): void {
     const trimmed = line.trim();
@@ -157,12 +212,19 @@ export class BulkProductAccumulator {
     const id = typeof object.id === "string" ? object.id : null;
     if (!id) return;
 
-    const parentId = typeof object.__parentId === "string" ? object.__parentId : null;
+    const parentId =
+      typeof object.__parentId === "string" ? object.__parentId : null;
     if (parentId) {
       if (id.startsWith(COLLECTION_GID)) {
         const list = this.collections.get(parentId) ?? [];
         list.push(id);
         this.collections.set(parentId, list);
+      } else if (id.startsWith(METAFIELD_GID)) {
+        const metafield = object as unknown as MetafieldNode;
+        if (Object.keys(pickMetafields([metafield])).length === 0) return;
+        const list = this.metafields.get(parentId) ?? [];
+        list.push(metafield);
+        this.metafields.set(parentId, list);
       }
       return;
     }
@@ -178,7 +240,11 @@ export class BulkProductAccumulator {
 
   products(): IndexedProduct[] {
     return [...this.nodes.values()].map((node) =>
-      toIndexedProduct(node, this.collections.get(node.id) ?? []),
+      toIndexedProduct(
+        node,
+        this.collections.get(node.id) ?? [],
+        this.metafields.get(node.id) ?? [],
+      ),
     );
   }
 }
@@ -187,7 +253,9 @@ export class BulkProductAccumulator {
  * Splits a stream of text chunks into lines. Chunks from a download can end
  * part way through a line, so the unfinished tail is carried over.
  */
-export async function* splitLines(chunks: AsyncIterable<string>): AsyncGenerator<string> {
+export async function* splitLines(
+  chunks: AsyncIterable<string>,
+): AsyncGenerator<string> {
   let buffer = "";
   for await (const chunk of chunks) {
     buffer += chunk;

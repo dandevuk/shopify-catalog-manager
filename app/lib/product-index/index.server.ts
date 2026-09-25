@@ -13,6 +13,7 @@ import {
   findOnlineStorePublication,
   splitLines,
   toIndexedProduct,
+  type MetafieldNode,
   type ProductNode,
 } from "./products";
 import {
@@ -76,11 +77,8 @@ export async function lookupOnlineStorePublicationId(
   let cursor: string | null = null;
   // Sales channels per shop are few; 5 pages of 50 is plenty.
   for (let page = 0; page < 5; page++) {
-    const { data }: { data: PublicationsPage } = await runGraphql<PublicationsPage>(
-      admin,
-      PUBLICATIONS_QUERY,
-      { cursor },
-    );
+    const { data }: { data: PublicationsPage } =
+      await runGraphql<PublicationsPage>(admin, PUBLICATIONS_QUERY, { cursor });
     const found = findOnlineStorePublication(data.publications.nodes);
     if (found) return found;
     if (!data.publications.pageInfo.hasNextPage) break;
@@ -113,7 +111,11 @@ const BULK_RUN_MUTATION = `#graphql
 interface BulkRunResult {
   bulkOperationRunQuery: {
     bulkOperation: { id: string; status: string; createdAt: string } | null;
-    userErrors: { field: string[] | null; message: string; code: string | null }[];
+    userErrors: {
+      field: string[] | null;
+      message: string;
+      code: string | null;
+    }[];
   };
 }
 
@@ -153,15 +155,14 @@ async function getBulkOperation(
   admin: AdminGraphqlClient,
   id: string,
 ): Promise<BulkOperationInfo | null> {
-  const { data } = await runGraphql<{ bulkOperation: BulkOperationInfo | null }>(
-    admin,
-    BULK_STATUS_QUERY,
-    { id },
-  );
+  const { data } = await runGraphql<{
+    bulkOperation: BulkOperationInfo | null;
+  }>(admin, BULK_STATUS_QUERY, { id });
   return data.bulkOperation;
 }
 
-export type StartRebuildResult = { started: true } | { started: false; reason: string };
+export type StartRebuildResult =
+  { started: true } | { started: false; reason: string };
 
 export async function startProductIndexRebuild(
   admin: AdminGraphqlClient,
@@ -183,7 +184,8 @@ export async function startProductIndexRebuild(
   const startedAt = new Date();
 
   try {
-    const onlineStorePublicationId = await lookupOnlineStorePublicationId(admin);
+    const onlineStorePublicationId =
+      await lookupOnlineStorePublicationId(admin);
     const { data } = await runGraphql<BulkRunResult>(admin, BULK_RUN_MUTATION, {
       query: buildBulkProductQuery(onlineStorePublicationId),
     });
@@ -191,8 +193,9 @@ export async function startProductIndexRebuild(
 
     if (userErrors.length > 0 || !bulkOperation) {
       const reason =
-        userErrors.map((e) => `${e.code ?? "ERROR"}: ${e.message}`).join("; ") ||
-        "Shopify didn't return a bulk operation.";
+        userErrors
+          .map((e) => `${e.code ?? "ERROR"}: ${e.message}`)
+          .join("; ") || "Shopify didn't return a bulk operation.";
       await markFailed(shop.id, reason);
       return { started: false, reason };
     }
@@ -225,11 +228,18 @@ export async function ensureProductIndex(
   shopDomain: string,
 ): Promise<void> {
   const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
-  if (!shop || shop.productIndexRebuiltAt || shop.productIndexStatus === "RUNNING") return;
+  if (
+    !shop ||
+    shop.productIndexRebuiltAt ||
+    shop.productIndexStatus === "RUNNING"
+  )
+    return;
 
   const result = await startProductIndexRebuild(admin, shopDomain);
   if (!result.started) {
-    console.error(`Product index rebuild for ${shopDomain} didn't start: ${result.reason}`);
+    console.error(
+      `Product index rebuild for ${shopDomain} didn't start: ${result.reason}`,
+    );
   }
 }
 
@@ -260,7 +270,11 @@ export async function finishProductIndexBuild(
   try {
     const operation = await getBulkOperation(admin, operationId);
     if (!operation) {
-      await markFailed(shop.id, "Shopify no longer has this bulk operation.", operationId);
+      await markFailed(
+        shop.id,
+        "Shopify no longer has this bulk operation.",
+        operationId,
+      );
       return;
     }
     if (UNFINISHED_STATUSES.has(operation.status)) return;
@@ -280,14 +294,20 @@ export async function finishProductIndexBuild(
       await readJsonl(operation.url, (line) => accumulator.addLine(line));
     }
 
-    await upsertProducts(shop.id, accumulator.products(), { collectionsReadAt: startedAt });
+    await upsertProducts(shop.id, accumulator.products(), {
+      collectionsReadAt: startedAt,
+    });
     const deleted = await removeProductsDeletedSince(shop.id, startedAt);
     const removed = await removeProductsNotWrittenSince(shop.id, startedAt);
 
     // Only if this is still the shop's current rebuild: a newer one may have
     // started while this one was writing, and must not be marked finished.
     const { count } = await prisma.shop.updateMany({
-      where: { id: shop.id, productIndexOperationId: operationId, productIndexStatus: "RUNNING" },
+      where: {
+        id: shop.id,
+        productIndexOperationId: operationId,
+        productIndexStatus: "RUNNING",
+      },
       data: {
         productIndexStatus: "COMPLETED",
         productIndexRebuiltAt: new Date(),
@@ -305,16 +325,23 @@ export async function finishProductIndexBuild(
 }
 
 /** Streams a JSONL file line by line, so a large shop's file isn't held as one string. */
-async function readJsonl(url: string, onLine: (line: string) => void): Promise<void> {
+async function readJsonl(
+  url: string,
+  onLine: (line: string) => void,
+): Promise<void> {
   const response = await fetch(url);
   if (!response.ok || !response.body) {
-    throw new Error(`Downloading the bulk operation result failed: HTTP ${response.status}`);
+    throw new Error(
+      `Downloading the bulk operation result failed: HTTP ${response.status}`,
+    );
   }
   const text = response.body.pipeThrough(new TextDecoderStream());
   for await (const line of splitLines(readChunks(text))) onLine(line);
 }
 
-async function* readChunks(stream: ReadableStream<string>): AsyncGenerator<string> {
+async function* readChunks(
+  stream: ReadableStream<string>,
+): AsyncGenerator<string> {
   const reader = stream.getReader();
   try {
     for (;;) {
@@ -343,25 +370,41 @@ export async function checkProductIndexBuild(
   shopDomain: string,
 ): Promise<BuildProgress | null> {
   const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
-  if (!shop?.productIndexOperationId || shop.productIndexStatus !== "RUNNING") return null;
+  if (!shop?.productIndexOperationId || shop.productIndexStatus !== "RUNNING")
+    return null;
 
   const operation = await getBulkOperation(admin, shop.productIndexOperationId);
   if (operation && UNFINISHED_STATUSES.has(operation.status)) {
     return { running: true, productCount: Number(operation.rootObjectCount) };
   }
 
-  await finishProductIndexBuild(admin, shopDomain, shop.productIndexOperationId);
-  return { running: false, productCount: Number(operation?.rootObjectCount ?? 0) };
+  await finishProductIndexBuild(
+    admin,
+    shopDomain,
+    shop.productIndexOperationId,
+  );
+  return {
+    running: false,
+    productCount: Number(operation?.rootObjectCount ?? 0),
+  };
 }
 
 /**
  * With an operation ID, only marks the rebuild failed if it's still the
  * shop's current, running one, so a stale rebuild can't hide a newer one.
  */
-async function markFailed(shopId: string, error: string, operationId?: string): Promise<void> {
+async function markFailed(
+  shopId: string,
+  error: string,
+  operationId?: string,
+): Promise<void> {
   await prisma.shop.updateMany({
     where: operationId
-      ? { id: shopId, productIndexOperationId: operationId, productIndexStatus: "RUNNING" }
+      ? {
+          id: shopId,
+          productIndexOperationId: operationId,
+          productIndexStatus: "RUNNING",
+        }
       : { id: shopId },
     data: { productIndexStatus: "FAILED", productIndexError: error },
   });
@@ -371,13 +414,16 @@ async function markFailed(shopId: string, error: string, operationId?: string): 
 // Single products (webhooks)
 // ---------------------------------------------------------------------------
 
+interface PageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
 interface SingleProductResult {
   product:
     | (ProductNode & {
-        collections: {
-          nodes: { id: string }[];
-          pageInfo: { hasNextPage: boolean; endCursor: string | null };
-        };
+        collections: { nodes: { id: string }[]; pageInfo: PageInfo };
+        metafields: { nodes: MetafieldNode[]; pageInfo: PageInfo };
       })
     | null;
 }
@@ -399,7 +445,10 @@ export async function refreshProduct(
   if (!onlineStorePublicationId) {
     onlineStorePublicationId = await lookupOnlineStorePublicationId(admin);
     if (onlineStorePublicationId) {
-      await prisma.shop.update({ where: { id: shop.id }, data: { onlineStorePublicationId } });
+      await prisma.shop.update({
+        where: { id: shop.id },
+        data: { onlineStorePublicationId },
+      });
     }
   }
 
@@ -407,22 +456,48 @@ export async function refreshProduct(
   // Taken before the read, so it's never later than the data it describes.
   const readAt = new Date();
   const collectionIds: string[] = [];
+  const metafields: MetafieldNode[] = [];
   let product: SingleProductResult["product"] = null;
   let collectionsAfter: string | null = null;
+  let metafieldsAfter: string | null = null;
+  let collectionsDone = false;
+  let metafieldsDone = false;
 
-  // A product is rarely in more than 250 collections, but page through if so.
-  for (let page = 0; page < 20; page++) {
-    const result: GraphqlResult<SingleProductResult> = await runGraphql<SingleProductResult>(
-      admin,
-      query,
-      { id: productId, collectionsAfter },
-    );
-    const page: SingleProductResult["product"] = result.data.product;
-    if (!page) break;
-    product = page;
-    collectionIds.push(...page.collections.nodes.map((collection) => collection.id));
-    if (!page.collections.pageInfo.hasNextPage || !page.collections.pageInfo.endCursor) break;
-    collectionsAfter = page.collections.pageInfo.endCursor;
+  // A product rarely has more than 250 collections or metafields, but page
+  // through if so. A finished connection keeps its last cursor and comes back
+  // empty while the other one carries on.
+  for (
+    let request = 0;
+    request < 20 && !(collectionsDone && metafieldsDone);
+    request++
+  ) {
+    const result: GraphqlResult<SingleProductResult> =
+      await runGraphql<SingleProductResult>(admin, query, {
+        id: productId,
+        collectionsAfter,
+        metafieldsAfter,
+      });
+    const current: SingleProductResult["product"] = result.data.product;
+    product = current;
+    if (!current) break;
+
+    // Always move a cursor to the end of the page just read, even for a
+    // finished connection, so the next request asks for the (empty) page
+    // after it rather than the first page again.
+    if (!collectionsDone) {
+      collectionIds.push(
+        ...current.collections.nodes.map((collection) => collection.id),
+      );
+      const { hasNextPage, endCursor } = current.collections.pageInfo;
+      collectionsDone = !hasNextPage || !endCursor;
+      collectionsAfter = endCursor ?? collectionsAfter;
+    }
+    if (!metafieldsDone) {
+      metafields.push(...current.metafields.nodes);
+      const { hasNextPage, endCursor } = current.metafields.pageInfo;
+      metafieldsDone = !hasNextPage || !endCursor;
+      metafieldsAfter = endCursor ?? metafieldsAfter;
+    }
   }
 
   if (!product) {
@@ -430,9 +505,13 @@ export async function refreshProduct(
     await deleteProduct(shop.id, productId);
     return;
   }
-  await upsertProducts(shop.id, [toIndexedProduct(product, collectionIds)], {
-    collectionsReadAt: readAt,
-  });
+  await upsertProducts(
+    shop.id,
+    [toIndexedProduct(product, collectionIds, metafields)],
+    {
+      collectionsReadAt: readAt,
+    },
+  );
 }
 
 /**
@@ -449,7 +528,10 @@ export async function refreshProduct(
 export const RECHECK_DELAYS_MS = [30_000, 2 * 60_000, 10 * 60_000];
 const rechecks = createDelayedRunner();
 
-function scheduleRechecks(key: string, run: (attempt: number) => Promise<void>): void {
+function scheduleRechecks(
+  key: string,
+  run: (attempt: number) => Promise<void>,
+): void {
   RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
     // One key per attempt, so a new event for the same resource restarts all of them.
     rechecks.schedule(`${key} ${attempt}`, delayMs, () => run(attempt));
@@ -477,7 +559,9 @@ export function scheduleCollectionRecheck(
 ): void {
   scheduleRechecks(`${shopDomain} ${collectionId}`, async (attempt) => {
     const result = await refreshCollection(admin, shopDomain, collectionId);
-    console.log(`${recheckLabel(attempt)} for ${collectionId}: ${describeCollectionResult(result)}`);
+    console.log(
+      `${recheckLabel(attempt)} for ${collectionId}: ${describeCollectionResult(result)}`,
+    );
   });
 }
 
@@ -492,7 +576,8 @@ async function recheckProduct(
   const after = await collectionIdsFor(shopDomain, productId);
 
   // Logged so we can learn how long Shopify takes to apply collection conditions.
-  const changed = before?.slice().sort().join() !== after?.slice().sort().join();
+  const changed =
+    before?.slice().sort().join() !== after?.slice().sort().join();
   console.log(
     `${recheckLabel(attempt)} for ${productId}: ` +
       (changed
@@ -505,7 +590,10 @@ function describeDelay(ms: number): string {
   return ms < 60_000 ? `${ms / 1000}s` : `${ms / 60_000} min`;
 }
 
-async function collectionIdsFor(shopDomain: string, productId: string): Promise<string[] | null> {
+async function collectionIdsFor(
+  shopDomain: string,
+  productId: string,
+): Promise<string[] | null> {
   const row = await prisma.productIndex.findFirst({
     where: { productId, shop: { domain: shopDomain } },
     select: { collectionIds: true },
@@ -513,7 +601,10 @@ async function collectionIdsFor(shopDomain: string, productId: string): Promise<
   return row?.collectionIds ?? null;
 }
 
-export async function removeProduct(shopDomain: string, productId: string): Promise<void> {
+export async function removeProduct(
+  shopDomain: string,
+  productId: string,
+): Promise<void> {
   const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
   if (shop) await deleteProduct(shop.id, productId);
 }
@@ -562,7 +653,8 @@ interface CollectionMembersResult {
  * Returns how many rows changed, `"deleted"` if the collection no longer
  * exists, or null if the shop is unknown.
  */
-export type CollectionRefreshResult = { added: number; removed: number } | "deleted" | null;
+export type CollectionRefreshResult =
+  { added: number; removed: number } | "deleted" | null;
 
 export async function refreshCollection(
   admin: AdminGraphqlClient,
@@ -578,11 +670,16 @@ export async function refreshCollection(
   let after: string | null = null;
   for (;;) {
     const result: GraphqlResult<CollectionMembersResult> =
-      await runGraphql<CollectionMembersResult>(admin, COLLECTION_MEMBERS_QUERY, {
-        id: collectionId,
-        after,
-      });
-    const collection: CollectionMembersResult["collection"] = result.data.collection;
+      await runGraphql<CollectionMembersResult>(
+        admin,
+        COLLECTION_MEMBERS_QUERY,
+        {
+          id: collectionId,
+          after,
+        },
+      );
+    const collection: CollectionMembersResult["collection"] =
+      result.data.collection;
     if (!collection) {
       // Deleted between the webhook being sent and now.
       await removeCollection(shop.id, collectionId, readAt);
@@ -597,9 +694,12 @@ export async function refreshCollection(
   return setCollectionMembership(shop.id, collectionId, productIds, readAt);
 }
 
-export function describeCollectionResult(result: CollectionRefreshResult): string {
+export function describeCollectionResult(
+  result: CollectionRefreshResult,
+): string {
   if (result === null) return "shop not found";
-  if (result === "deleted") return "collection no longer exists, removed from the index";
+  if (result === "deleted")
+    return "collection no longer exists, removed from the index";
   if (!result.added && !result.removed) return "no change";
   return `added to ${result.added} products, removed from ${result.removed}`;
 }
@@ -625,7 +725,9 @@ export interface ProductIndexSummary {
   onlineStorePublicationId: string | null;
 }
 
-export async function getProductIndexSummary(shopDomain: string): Promise<ProductIndexSummary> {
+export async function getProductIndexSummary(
+  shopDomain: string,
+): Promise<ProductIndexSummary> {
   const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
   return {
     productCount: shop ? await countProducts(shop.id) : 0,

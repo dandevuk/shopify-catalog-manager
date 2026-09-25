@@ -369,3 +369,89 @@ describe("collections, status, Online Store and category", () => {
     );
   });
 });
+
+describe("metafields", () => {
+  const mf = (
+    operator: string,
+    value: string | null,
+    metafieldType = "single_line_text_field",
+    metafieldKey = "custom.trade_tier",
+  ): RuleCondition => ({
+    ...include("metafield", operator, value),
+    metafieldKey,
+    metafieldType,
+  });
+  const withMetafield = (
+    type: string,
+    value: string,
+    key = "custom.trade_tier",
+  ) => product(1, { metafields: { [key]: { type, value } } });
+
+  it("compares text ignoring case", () => {
+    const gold = withMetafield("single_line_text_field", "Gold");
+    expect(matches(mf("equals", "gold"), gold)).toBe(true);
+    expect(matches(mf("starts_with", "go"), gold)).toBe(true);
+    expect(matches(mf("not_equals", "silver"), gold)).toBe(true);
+    expect(matches(mf("contains", "silver"), gold)).toBe(false);
+  });
+
+  it("compares numbers as numbers", () => {
+    const qty = withMetafield("number_integer", "10", "custom.min_qty");
+    const cond = (op: string, v: string) =>
+      mf(op, v, "number_integer", "custom.min_qty");
+    expect(matches(cond("greater_than", "9"), qty)).toBe(true);
+    expect(matches(cond("greater_than", "10"), qty)).toBe(false);
+    expect(matches(cond("less_than", "10.5"), qty)).toBe(true);
+    // "10" and "10.0" are the same number, though not the same text.
+    expect(matches(cond("equals", "10.0"), qty)).toBe(true);
+  });
+
+  it("compares booleans", () => {
+    const tradeOnly = withMetafield("boolean", "true", "custom.trade_only");
+    const cond = (v: string) => mf("equals", v, "boolean", "custom.trade_only");
+    expect(matches(cond("true"), tradeOnly)).toBe(true);
+    expect(matches(cond("false"), tradeOnly)).toBe(false);
+  });
+
+  it("checks list items one by one", () => {
+    const regions = withMetafield(
+      "list.single_line_text_field",
+      '["UK","EU"]',
+      "custom.regions",
+    );
+    const cond = (op: string, v: string) =>
+      mf(op, v, "list.single_line_text_field", "custom.regions");
+    expect(matches(cond("contains", "uk"), regions)).toBe(true);
+    // A list item has to match whole, not just contain the text.
+    expect(matches(cond("contains", "U"), regions)).toBe(false);
+    expect(matches(cond("not_contains", "us"), regions)).toBe(true);
+  });
+
+  it("treats a missing or empty metafield as not set", () => {
+    const none = product(1);
+    const emptyList = withMetafield("list.single_line_text_field", "[]");
+    expect(matches(mf("is_not_set", null), none)).toBe(true);
+    expect(matches(mf("is_set", null), none)).toBe(false);
+    expect(
+      matches(mf("is_set", null, "list.single_line_text_field"), emptyList),
+    ).toBe(false);
+    expect(
+      matches(
+        mf("is_set", null),
+        withMetafield("single_line_text_field", "gold"),
+      ),
+    ).toBe(true);
+    // Like a missing vendor: "is not" matches, value comparisons don't.
+    expect(matches(mf("not_equals", "gold"), none)).toBe(true);
+    expect(matches(mf("equals", "gold"), none)).toBe(false);
+    expect(matches(mf("greater_than", "1", "number_integer"), none)).toBe(
+      false,
+    );
+  });
+
+  it("works on index rows written before metafields were indexed", () => {
+    const old = product(1, { metafields: null });
+    expect(matches(mf("is_not_set", null), old)).toBe(true);
+    expect(matches(mf("equals", "gold"), old)).toBe(false);
+  });
+});

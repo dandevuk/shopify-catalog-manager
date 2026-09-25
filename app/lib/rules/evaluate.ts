@@ -1,4 +1,9 @@
 import {
+  listItems,
+  metafieldKind,
+  type IndexedMetafields,
+} from "../product-index/metafields";
+import {
   normalise,
   validateCondition,
   type MatchMode,
@@ -30,6 +35,8 @@ export interface RuleProduct {
   categoryId: string | null;
   collectionIds: string[];
   onlineStorePublished: boolean;
+  /** Keyed by "namespace.key"; missing until the index is rebuilt with metafields */
+  metafields?: IndexedMetafields | null;
 }
 
 export interface RuleSetInput {
@@ -72,7 +79,11 @@ export function evaluateRuleSet(
   });
   if (errors.length > 0) return { ok: false, errors };
 
-  const conditions = ruleSet.conditions as ValidCondition[];
+  // "is set" and "is not set" have no value; ValidCondition promises text.
+  const conditions = ruleSet.conditions.map(
+    (condition) =>
+      ({ ...condition, value: condition.value ?? "" }) as ValidCondition,
+  );
   const include = conditions.filter((c) => c.group === "INCLUDE");
   const exclude = conditions.filter((c) => c.group === "EXCLUDE");
 
@@ -177,6 +188,66 @@ export function matchesCondition(
         product.categoryId.startsWith(`${value}-`)
       );
     }
+    case "metafield":
+      return matchesMetafield(product, condition, value);
+  }
+}
+
+/**
+ * A product without the metafield (or with an empty one) is "not set". Like a
+ * missing vendor, it matches "is not" and "doesn't contain", and nothing else
+ * that compares a value.
+ */
+function matchesMetafield(
+  product: RuleProduct,
+  condition: ValidCondition,
+  value: string,
+): boolean {
+  const kind = metafieldKind(condition.metafieldType ?? "");
+  const metafield = product.metafields?.[condition.metafieldKey ?? ""];
+  const items = kind === "list" && metafield ? listItems(metafield.value) : [];
+  const isSet =
+    metafield !== undefined &&
+    metafield.value.trim() !== "" &&
+    (kind !== "list" || items.length > 0);
+
+  if (condition.operator === "is_set") return isSet;
+  if (condition.operator === "is_not_set") return !isSet;
+  if (!isSet || !metafield) {
+    return (
+      condition.operator === "not_equals" ||
+      condition.operator === "not_contains"
+    );
+  }
+
+  switch (kind) {
+    case "text":
+      return compareText(metafield.value, condition.operator, value);
+    case "boolean":
+      return normalise(metafield.value) === normalise(value);
+    case "list": {
+      const has = items.some((item) => normalise(item) === normalise(value));
+      return condition.operator === "contains" ? has : !has;
+    }
+    case "number": {
+      const actual = Number(metafield.value);
+      const expected = Number(value);
+      if (!Number.isFinite(actual)) return condition.operator === "not_equals";
+      switch (condition.operator) {
+        case "equals":
+          return actual === expected;
+        case "not_equals":
+          return actual !== expected;
+        case "greater_than":
+          return actual > expected;
+        case "less_than":
+          return actual < expected;
+        default:
+          return false;
+      }
+    }
+    default:
+      return false;
   }
 }
 
@@ -200,7 +271,8 @@ function compareText(
       return a.startsWith(e);
     case "ends_with":
       return a.endsWith(e);
-    case "within":
+    default:
+      // within, greater_than, less_than, is_set and is_not_set aren't text comparisons.
       return false;
   }
 }

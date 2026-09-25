@@ -18,6 +18,7 @@ const condition = (field: string, operator: string, value: string | null) => ({
 describe("validateCondition", () => {
   it("accepts every operator each field lists", () => {
     for (const [field, definition] of Object.entries(FIELDS)) {
+      if (field === "metafield") continue; // operators depend on the type; tested below
       const value = definition.options?.[0].value ?? "x";
       for (const operator of definition.operators) {
         expect(validateCondition(condition(field, operator, value))).toBeNull();
@@ -89,5 +90,84 @@ describe("operatorLabel", () => {
   it("words collection operators as membership", () => {
     expect(operatorLabel("in_collection", "not_equals")).toBe("is not in");
     expect(operatorLabel("vendor", "not_equals")).toBe("is not");
+  });
+});
+
+describe("metafield conditions", () => {
+  const metafield = (
+    operator: string,
+    value: string | null,
+    metafieldType: string | null = "single_line_text_field",
+    metafieldKey: string | null = "custom.trade_tier",
+  ) => ({
+    ...condition("metafield", operator, value),
+    metafieldKey,
+    metafieldType,
+  });
+
+  it("accepts the operators each type allows", () => {
+    expect(validateCondition(metafield("equals", "gold"))).toBeNull();
+    expect(
+      validateCondition(metafield("greater_than", "5", "number_integer")),
+    ).toBeNull();
+    expect(
+      validateCondition(metafield("equals", "true", "boolean")),
+    ).toBeNull();
+    expect(
+      validateCondition(
+        metafield("contains", "uk", "list.single_line_text_field"),
+      ),
+    ).toBeNull();
+  });
+
+  it("needs a metafield with a supported type", () => {
+    expect(validateCondition(metafield("equals", "gold", null, null))).toBe(
+      "Choose a metafield.",
+    );
+    expect(
+      validateCondition(
+        metafield("equals", "gold", "single_line_text_field", "trade_tier"),
+      ),
+    ).toBe('"trade_tier" isn\'t a metafield key.');
+    expect(validateCondition(metafield("equals", "{}", "json"))).toMatch(
+      /type rules can't use/,
+    );
+  });
+
+  it("rejects operators the type doesn't allow", () => {
+    expect(validateCondition(metafield("greater_than", "5"))).toBe(
+      'Metafield custom.trade_tier can\'t use "greater_than".',
+    );
+    expect(
+      validateCondition(metafield("starts_with", "t", "boolean")),
+    ).not.toBeNull();
+  });
+
+  it("checks values against the type", () => {
+    expect(
+      validateCondition(metafield("equals", "ten", "number_decimal")),
+    ).toBe("Metafield custom.trade_tier needs a number.");
+    expect(validateCondition(metafield("equals", "yes", "boolean"))).toBe(
+      "Metafield custom.trade_tier must be true or false.",
+    );
+    expect(validateCondition(metafield("equals", ""))).toBe(
+      "Metafield custom.trade_tier needs a value.",
+    );
+  });
+
+  it("needs no value for is set and is not set", () => {
+    expect(validateCondition(metafield("is_set", null))).toBeNull();
+    expect(validateCondition(metafield("is_not_set", ""))).toBeNull();
+  });
+
+  it("describes itself with the definition's name when given it", () => {
+    const tier = metafield("equals", "gold") as ValidCondition;
+    const names = (id: string) =>
+      id === "custom.trade_tier" ? "Trade tier" : undefined;
+    expect(describeCondition(tier, names)).toBe("Trade tier is gold");
+    expect(describeCondition(tier)).toBe("custom.trade_tier is gold");
+    expect(
+      describeCondition({ ...tier, operator: "is_not_set", value: "" }, names),
+    ).toBe("Trade tier is not set");
   });
 });
