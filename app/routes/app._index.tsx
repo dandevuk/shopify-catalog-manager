@@ -1,5 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { useLoaderData, useNavigate } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
@@ -10,6 +10,7 @@ import {
   type ProductIndexSummary,
 } from "../lib/product-index/index.server";
 import { formatDateTime } from "../lib/format";
+import { toCatalogParam } from "../lib/shopify/catalog-id";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -68,6 +69,8 @@ export default function CatalogsPage() {
 }
 
 function CatalogTable({ heading, catalogs }: { heading: string; catalogs: CatalogSummary[] }) {
+  const navigate = useNavigate();
+
   if (catalogs.length === 0) {
     return (
       <s-section heading={heading}>
@@ -86,6 +89,7 @@ function CatalogTable({ heading, catalogs }: { heading: string; catalogs: Catalo
           <s-table-header format="numeric">Products</s-table-header>
           <s-table-header>New products</s-table-header>
           <s-table-header>Last admin change</s-table-header>
+          <s-table-header>Rules</s-table-header>
         </s-table-header-row>
         <s-table-body>
           {catalogs.map((catalog) => (
@@ -102,6 +106,14 @@ function CatalogTable({ heading, catalogs }: { heading: string; catalogs: Catalo
                 <NewProductsBadge catalog={catalog} />
               </s-table-cell>
               <s-table-cell>{describeOperation(catalog)}</s-table-cell>
+              <s-table-cell>
+                <s-button
+                  variant="tertiary"
+                  onClick={() => navigate(`/app/catalogs/${toCatalogParam(catalog.id)}`)}
+                >
+                  Set up rules
+                </s-button>
+              </s-table-cell>
             </s-table-row>
           ))}
         </s-table-body>
