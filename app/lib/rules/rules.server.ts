@@ -250,6 +250,37 @@ export async function listCollections(
   return collections;
 }
 
+const COLLECTION_NAMES_QUERY = `#graphql
+  query RuleBuilderCollectionNames($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on Collection {
+        id
+        title
+      }
+    }
+  }
+`;
+
+/**
+ * Titles for the given collections only: the live preview needs names for
+ * the collections its rules use, not the whole list the picker loads.
+ */
+export async function getCollectionNames(
+  admin: AdminGraphqlClient,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const { data } = await runGraphql<{
+    nodes: ({ id?: string; title?: string } | null)[];
+  }>(admin, COLLECTION_NAMES_QUERY, { ids: unique });
+  return new Map(
+    data.nodes.flatMap((node) =>
+      node?.id && node.title ? [[node.id, node.title] as const] : [],
+    ),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Current catalog membership
 // ---------------------------------------------------------------------------
@@ -289,12 +320,15 @@ const membershipCache = new Map<string, { at: number; ids: string[] }>();
 
 /**
  * The publication's includedProducts (membership, including drafts and
- * archived: spike finding 9).
+ * archived: spike finding 9), or null if the publication no longer exists
+ * (deleted, or the catalog's publication was swapped). Null is never cached,
+ * and never treated as an empty list: an empty list would show every product
+ * as "to add".
  */
 export async function getCatalogMembership(
   admin: AdminGraphqlClient,
   publicationId: string,
-): Promise<string[]> {
+): Promise<string[] | null> {
   const cached = membershipCache.get(publicationId);
   if (cached && Date.now() - cached.at < MEMBERSHIP_CACHE_MS) return cached.ids;
 
@@ -307,7 +341,10 @@ export async function getCatalogMembership(
         cursor,
       });
     const page: MembershipPage["publication"] = result.data.publication;
-    if (!page) break;
+    if (!page) {
+      membershipCache.delete(publicationId);
+      return null;
+    }
     ids.push(...page.includedProducts.nodes.map((product) => product.id));
     const { hasNextPage, endCursor } = page.includedProducts.pageInfo;
     if (!hasNextPage || !endCursor) break;

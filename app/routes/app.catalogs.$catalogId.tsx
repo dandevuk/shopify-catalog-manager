@@ -3,6 +3,7 @@ import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
+  ShouldRevalidateFunction,
 } from "react-router";
 import { useFetcher, useLoaderData, useNavigate } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -29,6 +30,7 @@ import {
 import { countProducts } from "../lib/product-index/store.server";
 import {
   getCatalogMembership,
+  getCollectionNames,
   listCollections,
   loadIndexProducts,
   loadOverrides,
@@ -82,6 +84,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   };
 };
 
+/**
+ * React Router re-runs loaders after every action. A live preview changes
+ * nothing the loader reads, and re-running it on each edit would re-read the
+ * catalog and every collection, so skip it for previews.
+ */
+export const shouldRevalidate: ShouldRevalidateFunction = ({
+  actionResult,
+  defaultShouldRevalidate,
+}) => {
+  if ((actionResult as ActionResult | undefined)?.intent === "preview")
+    return false;
+  return defaultShouldRevalidate;
+};
+
 type ActionResult =
   | { intent: "preview"; preview: Preview }
   | { intent: "save"; ok: true }
@@ -105,13 +121,17 @@ export const action = async ({
       : { intent: "save", ...result };
   }
 
-  const [products, overrides, current, collections] = await Promise.all([
+  const collectionIds = rules.conditions.flatMap((c) =>
+    c.field === "in_collection" && c.value ? [c.value] : [],
+  );
+  const [products, overrides, current, names] = await Promise.all([
     loadIndexProducts(shop.id),
     loadOverrides(catalog.recordId),
     catalog.publicationId
       ? getCatalogMembership(admin, catalog.publicationId)
       : null,
-    listCollections(admin),
+    // Only the collections these rules name, not the picker's full list.
+    getCollectionNames(admin, collectionIds),
   ]);
   const evaluation = evaluateRuleSet(rules, products, overrides);
   if (!evaluation.ok) {
@@ -122,7 +142,6 @@ export const action = async ({
     };
   }
 
-  const names = new Map(collections.map((c) => [c.id, c.title]));
   return {
     intent: "preview",
     preview: buildPreview({
@@ -392,7 +411,6 @@ export default function RuleBuilderPage() {
       </s-section>
 
       <PreviewSection
-        catalogHasPublication={catalog.hasPublication}
         isB2B={catalog.type === "COMPANY_LOCATION"}
         indexedProducts={indexedProducts}
         complete={complete}
@@ -597,14 +615,12 @@ function placeholderFor(field: ConditionField): string {
 type ListName = "add" | "remove" | "unchanged";
 
 function PreviewSection({
-  catalogHasPublication,
   isB2B,
   indexedProducts,
   complete,
   loading,
   data,
 }: {
-  catalogHasPublication: boolean;
   isB2B: boolean;
   indexedProducts: number;
   complete: boolean;
@@ -661,7 +677,7 @@ function PreviewSection({
           {loading ? " Updating..." : ""}
         </s-paragraph>
 
-        {!catalogHasPublication && (
+        {preview.currentFollowsChannel && (
           <s-banner
             tone="info"
             heading="This catalog has no product list of its own yet"

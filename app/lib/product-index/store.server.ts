@@ -144,14 +144,19 @@ export async function removeCollection(
   collectionId: string,
   readAt: Date = new Date(),
 ): Promise<number> {
-  const { removed } = await setCollectionMembership(shopId, collectionId, [], readAt);
+  const { removed } = await setCollectionMembership(
+    shopId,
+    collectionId,
+    [],
+    readAt,
+  );
   return removed;
 }
 
 /**
- * Removes a product and records the deletion, so a rebuild that was already
- * running can't write the product back from its older snapshot (see
- * removeProductsDeletedSince).
+ * Removes a product and its pins and blocks, and records the deletion, so a
+ * rebuild that was already running can't write the product back from its
+ * older snapshot (see removeProductsDeletedSince).
  */
 export async function deleteProduct(
   shopId: string,
@@ -160,6 +165,9 @@ export async function deleteProduct(
 ): Promise<void> {
   await prisma.$transaction([
     prisma.productIndex.deleteMany({ where: { shopId, productId } }),
+    // Pins and blocks for a deleted product are meaningless, and a leftover
+    // pin would make the rules try to publish a product that doesn't exist.
+    prisma.override.deleteMany({ where: { productId, catalog: { shopId } } }),
     prisma.productIndexDeletion.upsert({
       where: { shopId_productId: { shopId, productId } },
       create: { shopId, productId, deletedAt },
@@ -186,7 +194,9 @@ export async function removeProductsDeletedSince(
     prisma.productIndex.deleteMany({
       where: { shopId, productId: { in: deleted.map((d) => d.productId) } },
     }),
-    prisma.productIndexDeletion.deleteMany({ where: { shopId, deletedAt: { lt: startedAt } } }),
+    prisma.productIndexDeletion.deleteMany({
+      where: { shopId, deletedAt: { lt: startedAt } },
+    }),
   ]);
   return count;
 }

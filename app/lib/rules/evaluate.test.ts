@@ -140,6 +140,29 @@ describe("pins and blocks", () => {
     ).toEqual([]);
   });
 
+  it("a pinned product not in the index is still in the catalog", () => {
+    const pinnedElsewhere = "gid://shopify/Product/77";
+    const result = evaluateRuleSet(
+      rules,
+      products,
+      new Map<string, Override>([
+        [pinnedElsewhere, "PIN"],
+        ["gid://shopify/Product/78", "BLOCK"],
+      ]),
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.productIds).toEqual([
+      "gid://shopify/Product/1",
+      pinnedElsewhere,
+    ]);
+    expect(result.decisions.get(pinnedElsewhere)).toEqual({
+      inCatalog: true,
+      reason: "pinned",
+    });
+    // A block for a product that isn't in the index changes nothing.
+    expect(result.decisions.has("gid://shopify/Product/78")).toBe(false);
+  });
+
   it("a pin beats an exclude condition", () => {
     const withExclude = ruleSet([
       include("vendor", "equals", "Driftline"),

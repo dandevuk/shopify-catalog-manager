@@ -90,6 +90,17 @@ export function evaluateRuleSet(
     decisions.set(product.productId, decision);
     if (decision.inCatalog) productIds.push(product.productId);
   }
+
+  // A pin keeps its product in the catalog even when the index doesn't have
+  // the product (yet): a rebuild may be running or a products/create webhook
+  // not processed. Dropping it would take a pinned product out of the catalog.
+  // Deleting a product also deletes its pins, so these are real products.
+  for (const [productId, override] of overrides) {
+    if (override === "PIN" && !decisions.has(productId)) {
+      decisions.set(productId, { inCatalog: true, reason: "pinned" });
+      productIds.push(productId);
+    }
+  }
   return { ok: true, productIds, decisions };
 }
 
