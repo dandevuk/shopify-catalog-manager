@@ -172,6 +172,31 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
 4. Managed mode: create publication if missing, autoPublish off, diff, chunked apply.
 5. Queue (BullMQ) and worker process; debounce product events.
 
+## Planned features (not yet scheduled)
+
+**B2B catalog assignment rules** (idea from Dan, Sep 2026). **Decided: the first feature
+after Phase 1, using company and location data only** (metafields); no customer segments
+or customer tags for now, so the app stays clear of customer data. Today a merchant assigns a
+B2B catalog to each company location by hand. The app could show every assignment and
+assign catalogs automatically from rules, e.g. "locations whose company has
+`custom.customer_type = wholesale` get the Wholesale catalog". Checked against the
+2026-07 schema:
+
+- Assign with `catalogContextUpdate(catalogId, contextsToAdd/contextsToRemove:
+  { companyLocationIds })`. Needs **`write_products`** (not requested today).
+- Rule data: `Company.metafields` and `CompanyLocation.metafields` (with
+  `read_companies`). Companies and locations have **no tags** field.
+- A catalog's contexts can only be markets or company locations: there is **no
+  customer segment or customer tag context**. Assigning by segment or customer tag would
+  mean mapping customers (company contacts) to locations, which needs `read_customers`
+  (protected customer data). That reverses the current "no customer data" stance, so
+  decide deliberately.
+- Reacting to new locations needs `company_locations/*` webhooks (protected customer
+  data) or a scheduled scan of company locations.
+- Only Plus shops can have `CompanyLocationCatalog`s (finding 11), so this is a Plus
+  feature.
+- Record the plan change in the claude.ai project plan too (it's the working copy).
+
 ## Dev store
 
 "Catalog Manager Test" (catalog-manager-test.myshopify.com), Shopify Plus App Development
