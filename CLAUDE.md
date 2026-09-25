@@ -255,6 +255,39 @@ assign catalogs automatically from rules, e.g. "locations whose company has
   feature.
 - Record the plan change in the claude.ai project plan too (it's the working copy).
 
+**Sidekick integration** (idea from Dan, Sep 2026). **Decided: a requirement**, not
+optional. Goal: a merchant can type a prompt like "make a catalog for VIP users, company
+or location metafield of custom_user_type = vip and products tagged vip" into Sidekick
+and get a catalog built from that. Checked against the Sidekick app extensions docs
+(shopify.dev, Sep 2026; the feature itself shipped December 2025):
+
+- Sidekick app extensions have two layers. Fixed resource "intent types"
+  (`application/email`, `ad`, `campaign`, `faq`, `loyalty-program`, `quote`, `return`,
+  `review`, `shipment`, `ticket`, plus `shopify/*` resource imports) don't cover
+  catalogs or collection rules, so that layer doesn't fit. Each extension can also
+  register up to 20 free-form **tools** (`tools.json`: name, description, JSON-schema
+  `inputSchema`, ordinary LLM function-calling) that Sidekick's model fills in from the
+  merchant's prompt itself. That's the fit: a `create_managed_catalog` tool whose
+  `inputSchema` mirrors the app's rule model (catalog name/type, include/exclude
+  conditions: field, operator, value) lets Sidekick parse the prompt straight into
+  structured conditions without the app doing any NLP.
+- Needs a new `admin_link` or `admin_action` extension (`admin.app.intent.link` or
+  `.render`) with `tools.json` and an `instructions.md` telling Sidekick when to reach
+  for it, plus `[sidekick] extensions_summary` in `shopify.app.toml`.
+- A new route receives the structured data (query params or hash, per the intent
+  schema's `mapTo`/`fieldName`) and turns it into `Include`/`Exclude` condition rows,
+  landing the merchant on the rule builder **pre-filled but not applied**: keep the same
+  "merchant confirms before anything touches Shopify" pattern managed mode already uses,
+  rather than Sidekick creating and syncing a catalog unsupervised.
+- Requires Shopify CLI 3.90+, API version 2026-04+ for the inline `.render` target
+  (2026-07 already in use here), and a CORS allowlist update for the Sidekick sandbox.
+- App Store review requires the extension's declared scope, `tools.json` descriptions
+  and runtime behaviour to stay materially consistent (guideline 2.2.8): the tool must
+  stay narrowly "catalog and rule creation", not a general-purpose action.
+- Schedule after the Phase 1 QC pass; scope the exact tool schema and the prompt-to-rule
+  mapping (including which condition fields/operators a v1 tool should expose) as a
+  dedicated step before building.
+
 ## Dev store
 
 "Catalog Manager Test" (catalog-manager-test.myshopify.com), Shopify Plus App Development
