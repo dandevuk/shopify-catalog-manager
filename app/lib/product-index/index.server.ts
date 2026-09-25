@@ -537,7 +537,7 @@ function recheckLabel(attempt: number): string {
 }
 
 /** Builds an admin client for background work with no request to authenticate. */
-async function backgroundAdmin(shopDomain: string): Promise<AdminGraphqlClient | null> {
+export async function backgroundAdmin(shopDomain: string): Promise<AdminGraphqlClient | null> {
   try {
     const { admin } = await unauthenticated.admin(shopDomain);
     return admin;

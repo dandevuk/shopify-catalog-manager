@@ -1,7 +1,7 @@
-import type { SyncCause } from "@prisma/client";
+import type { Shop, SyncCause } from "@prisma/client";
 import prisma from "../../db.server";
-import { unauthenticated } from "../../shopify.server";
 import { evaluateRuleSet, type Decision } from "../rules/evaluate";
+import { backgroundAdmin } from "../product-index/index.server";
 import { describeDecision } from "../rules/preview";
 import {
   forgetCatalogMembership,
@@ -221,11 +221,14 @@ async function blockersFor(
   admin: AdminGraphqlClient,
   shopDomain: string,
   catalog: RuleCatalog,
+  knownShop?: Shop,
 ): Promise<string[]> {
   const blockers: string[] = [];
   const [shopInfo, shop, running, state] = await Promise.all([
     getShopDiagnostics(admin),
-    prisma.shop.findUnique({ where: { domain: shopDomain } }),
+    knownShop
+      ? Promise.resolve(knownShop)
+      : prisma.shop.findUnique({ where: { domain: shopDomain } }),
     runningJob(catalog.recordId),
     runGraphql<{
       catalog: { operations: { status: string }[] } | null;
@@ -323,9 +326,14 @@ export async function startSync(
   if (!job)
     return { ok: false, error: "A sync is already running for this catalog." };
 
+  // Guards against this same process's own status polling (getSyncStatus,
+  // via runningJob) marking this job stale purely because STALE_JOB_MS has
+  // elapsed, while it's still genuinely running right here.
+  activeJobs.add(job.id);
+
   // Runs after the response; the page polls the job for progress.
-  void runSync(admin, shopId, catalog, job.id, acknowledgement, "MANUAL").catch(
-    async (error) => {
+  void runSync(admin, shopId, catalog, job.id, acknowledgement, "MANUAL")
+    .catch(async (error) => {
       try {
         await finishJob(job.id, "FAILED", describeError(error));
       } catch (recordError) {
@@ -336,8 +344,8 @@ export async function startSync(
           recordError,
         );
       }
-    },
-  );
+    })
+    .finally(() => activeJobs.delete(job.id));
   return { ok: true, jobId: job.id };
 }
 
@@ -359,14 +367,8 @@ export async function runAutomaticSync(
   const row = await prisma.catalog.findUnique({ where: { id: catalogRecordId } });
   if (!row || row.shopId !== shop.id || !row.managed) return; // stopped being managed since this was queued
 
-  let admin: AdminGraphqlClient;
-  try {
-    ({ admin } = await unauthenticated.admin(shopDomain));
-  } catch (error) {
-    // No offline session (e.g. the shop uninstalled since the job was queued).
-    console.error(`No admin session for ${shopDomain}`, error);
-    return;
-  }
+  const admin = await backgroundAdmin(shopDomain);
+  if (!admin) return;
 
   // Read live rather than trust the cached publicationId/autoPublish: a
   // merchant can flip "Automatically add new products" back on in the admin
@@ -377,7 +379,7 @@ export async function runAutomaticSync(
     return;
   }
 
-  const blockers = await blockersFor(admin, shopDomain, catalog);
+  const blockers = await blockersFor(admin, shopDomain, catalog, shop);
   if (blockers.length > 0) {
     console.log(
       `Automatic sync for "${catalog.title}" (${shopDomain}) skipped: ${blockers.join(" ")}`,
@@ -617,15 +619,26 @@ export async function finishJob(
 // ---------------------------------------------------------------------------
 
 /**
- * A job still "running" after this long was interrupted: the worker process
- * that owned it crashed or was restarted mid-sync. Generous, since creating
- * a publication (`createPublication`) alone can legitimately take up to 10
- * minutes. BullMQ's own stalled-job detection (the worker was configured
- * with the defaults) will usually mark the queue side failed well before
- * this; this is the backstop for the SyncJob row when nothing catches that,
- * e.g. the worker isn't running at all.
+ * A job still "running" after this long was interrupted: the process that
+ * owned it (the worker, for an automatic sync, or the web server, for a
+ * manual one, which still runs its sync as a fire-and-forget promise) crashed
+ * or was restarted mid-sync. Generous, since creating a publication
+ * (`createPublication`) alone can legitimately take up to 10 minutes.
+ * BullMQ's own stalled-job detection (the worker was configured with the
+ * defaults) will usually mark the queue side failed well before this for
+ * automatic syncs; this is the backstop for the SyncJob row when nothing
+ * catches that, e.g. the worker isn't running at all.
  */
 const STALE_JOB_MS = 60 * 60_000;
+
+/**
+ * Manual job IDs this web server process is still actively running (added in
+ * `startSync`, removed once `runSync` settles). Only meaningful here, in this
+ * process: it stops this process's own status polling (`getSyncStatus`, via
+ * `runningJob`) from marking a manual sync stale purely because it has taken
+ * longer than STALE_JOB_MS, while it's still genuinely running right here.
+ */
+const activeJobs = new Set<string>();
 
 async function runningJob(catalogRecordId: string) {
   const job = await prisma.syncJob.findFirst({
@@ -636,6 +649,7 @@ async function runningJob(catalogRecordId: string) {
   });
   if (
     job &&
+    !activeJobs.has(job.id) &&
     Date.now() - (job.startedAt ?? job.createdAt).getTime() > STALE_JOB_MS
   ) {
     await finishJob(
