@@ -4,8 +4,11 @@ import {
   describeCollectionResult,
   refreshCollection,
   removeCollectionFromIndex,
-  scheduleCollectionRecheck,
 } from "../lib/product-index/index.server";
+import {
+  scheduleCollectionRecheck,
+  scheduleManagedCatalogSyncs,
+} from "../lib/queue/queues.server";
 import { payloadGid } from "../lib/shopify/webhook-payload";
 
 /**
@@ -16,8 +19,10 @@ import { payloadGid } from "../lib/shopify/webhook-payload";
  * reliably products/update, and the payload doesn't list the products, so the
  * handler re-reads the collection's product list. When a collection's
  * conditions are created or changed, Shopify applies them a little later, so
- * the list is read again after 30 seconds, 2 minutes and 10 minutes. An error returns a 500 so
- * Shopify retries the delivery.
+ * the list is read again after 30 seconds, 2 minutes and 10 minutes (a
+ * BullMQ delayed job). Every branch also queues a debounced automatic sync
+ * for the shop's managed catalogs (Phase 1, step 5). An error returns a 500
+ * so Shopify retries the delivery.
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic, payload, admin } = await authenticate.webhook(request);
@@ -34,9 +39,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } else if (admin) {
     const result = await refreshCollection(admin, shop, collectionId);
     console.log(`Collection ${collectionId}: ${describeCollectionResult(result)}`);
-    if (result !== "deleted") scheduleCollectionRecheck(admin, shop, collectionId);
+    if (result !== "deleted") scheduleCollectionRecheck(shop, collectionId);
   }
   // No admin client means there's no session: the app has been uninstalled.
 
+  await scheduleManagedCatalogSyncs(shop);
   return new Response();
 };

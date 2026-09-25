@@ -1,4 +1,6 @@
+import type { SyncCause } from "@prisma/client";
 import prisma from "../../db.server";
+import { unauthenticated } from "../../shopify.server";
 import { evaluateRuleSet, type Decision } from "../rules/evaluate";
 import { describeDecision } from "../rules/preview";
 import {
@@ -6,6 +8,7 @@ import {
   getCatalogMembership,
   loadIndexProducts,
   loadOverrides,
+  loadRuleCatalog,
   loadRules,
   ruleNames,
   type RuleCatalog,
@@ -28,16 +31,21 @@ import {
  * Managed mode (Phase 1, step 4): make a catalog's product list match its
  * rules.
  *
- *   previewSync  what Apply would do, and anything blocking it
- *   startSync    re-plans, checks the merchant's confirmation, then runs the
- *                sync in the background and returns its SyncJob
- *   runSync      creates the catalog's publication if missing (finding 3),
- *                turns autoPublish off (finding 5), applies the plan in
- *                publicationUpdate chunks and records the audit log
+ *   previewSync      what Apply would do, and anything blocking it
+ *   startSync        the merchant clicks Apply/Sync now: checks their
+ *                     confirmation, then runs the sync and returns its SyncJob
+ *   runAutomaticSync a managed catalog's debounced queue trigger (Phase 1,
+ *                     step 5, `app/worker.ts`): same runSync, no merchant to
+ *                     confirm with, so it pauses instead of applying anything
+ *                     that would need a tick (a large removal, an empty result)
+ *   runSync          creates the catalog's publication if missing (finding 3),
+ *                     turns autoPublish off (finding 5), applies the plan in
+ *                     publicationUpdate chunks and records the audit log
  *
- * The background run is in-process for now: a restart interrupts it (the job
- * is then marked failed after an hour). It moves to BullMQ in step 5, which
- * also adds automatic syncing. Until then catalogs change only on Apply.
+ * Both entry points run the sync in the background (`app/worker.ts`'s BullMQ
+ * worker for automatic syncs; a fire-and-forget promise, for now, for manual
+ * ones so the browser gets a prompt reply) and poll/record through the same
+ * SyncJob row, claimed with `claimCatalog` so only one sync runs per catalog.
  */
 
 // ---------------------------------------------------------------------------
@@ -311,14 +319,13 @@ export async function startSync(
   const problem = checkAcknowledgement(planned.plan, acknowledgement);
   if (problem) return { ok: false, error: problem };
 
-  const job = await claimCatalog(catalog.recordId);
+  const job = await claimCatalog(catalog.recordId, "MANUAL");
   if (!job)
     return { ok: false, error: "A sync is already running for this catalog." };
 
   // Runs after the response; the page polls the job for progress.
-  activeJobs.add(job.id);
-  void runSync(admin, shopId, catalog, job.id, acknowledgement)
-    .catch(async (error) => {
+  void runSync(admin, shopId, catalog, job.id, acknowledgement, "MANUAL").catch(
+    async (error) => {
       try {
         await finishJob(job.id, "FAILED", describeError(error));
       } catch (recordError) {
@@ -329,9 +336,61 @@ export async function startSync(
           recordError,
         );
       }
-    })
-    .finally(() => activeJobs.delete(job.id));
+    },
+  );
   return { ok: true, jobId: job.id };
+}
+
+/**
+ * Called by the worker (`app/worker.ts`) when a managed catalog's debounced
+ * sync job runs. Builds its own admin client (no request to authenticate,
+ * since this runs outside any browser action) and, unlike the manual path,
+ * has no merchant to confirm a large removal or an empty result with: if the
+ * plan needs either, it pauses instead of applying anything, the same as a
+ * manual sync whose confirmation went stale.
+ */
+export async function runAutomaticSync(
+  shopDomain: string,
+  catalogRecordId: string,
+): Promise<void> {
+  const shop = await prisma.shop.findUnique({ where: { domain: shopDomain } });
+  if (!shop) return;
+
+  const row = await prisma.catalog.findUnique({ where: { id: catalogRecordId } });
+  if (!row || row.shopId !== shop.id || !row.managed) return; // stopped being managed since this was queued
+
+  let admin: AdminGraphqlClient;
+  try {
+    ({ admin } = await unauthenticated.admin(shopDomain));
+  } catch (error) {
+    // No offline session (e.g. the shop uninstalled since the job was queued).
+    console.error(`No admin session for ${shopDomain}`, error);
+    return;
+  }
+
+  // Read live rather than trust the cached publicationId/autoPublish: a
+  // merchant can flip "Automatically add new products" back on in the admin
+  // any time, and step 2 of runSync only turns it off if it sees that.
+  const catalog = await loadRuleCatalog(admin, shop.id, row.shopifyCatalogId);
+  if (!catalog) {
+    console.error(`Managed catalog ${row.shopifyCatalogId} for ${shopDomain} no longer exists`);
+    return;
+  }
+
+  const blockers = await blockersFor(admin, shopDomain, catalog);
+  if (blockers.length > 0) {
+    console.log(
+      `Automatic sync for "${catalog.title}" (${shopDomain}) skipped: ${blockers.join(" ")}`,
+    );
+    return;
+  }
+
+  const job = await claimCatalog(catalog.recordId, "WEBHOOK");
+  if (!job) return; // a sync is already running; the next debounce will try again
+
+  await runSync(admin, shop.id, catalog, job.id, null, "WEBHOOK").catch(async (error) => {
+    await finishJob(job.id, "FAILED", describeError(error));
+  });
 }
 
 /**
@@ -340,7 +399,7 @@ export async function startSync(
  * catalog's row makes two starts at the same moment queue up here, so the
  * second one sees the first one's job.
  */
-export async function claimCatalog(catalogRecordId: string) {
+export async function claimCatalog(catalogRecordId: string, cause: SyncCause) {
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT "id" FROM "Catalog" WHERE "id" = ${catalogRecordId} FOR UPDATE`;
     const busy = await tx.syncJob.findFirst({
@@ -353,7 +412,7 @@ export async function claimCatalog(catalogRecordId: string) {
     return tx.syncJob.create({
       data: {
         catalogId: catalogRecordId,
-        cause: "MANUAL",
+        cause,
         status: "RUNNING",
         startedAt: new Date(),
       },
@@ -361,12 +420,20 @@ export async function claimCatalog(catalogRecordId: string) {
   });
 }
 
+/**
+ * `acknowledgement` is null for an automatic sync: there's no merchant to
+ * confirm with, so the fresh plan computed below stands in for one, with
+ * nothing pre-ticked. That means it applies cleanly when nothing needs
+ * confirming, and pauses (same as a manual sync whose confirmation went
+ * stale) when the plan would remove a lot of the catalog or empty it.
+ */
 async function runSync(
   admin: AdminGraphqlClient,
   shopId: string,
   catalog: RuleCatalog,
   jobId: string,
-  acknowledgement: Acknowledgement,
+  acknowledgement: Acknowledgement | null,
+  cause: SyncCause,
 ): Promise<void> {
   // 1. The catalog needs its own product list (finding 3).
   let publicationId = catalog.publicationId;
@@ -391,7 +458,10 @@ async function runSync(
   }
 
   // 3. Plan again against the catalog as it is now. If it moved since the
-  // merchant confirmed, stop and let them look again.
+  // merchant confirmed, stop and let them look again. For an automatic sync
+  // (acknowledgement is null) there's no earlier look to compare against, so
+  // this plan's own counts stand in, ticking nothing: it applies cleanly
+  // when nothing needs confirming, and pauses otherwise.
   const planned = await planFromSavedRules(admin, shopId, {
     ...catalog,
     publicationId,
@@ -400,7 +470,13 @@ async function runSync(
     await finishJob(jobId, "FAILED", planned.error);
     return;
   }
-  const problem = checkAcknowledgement(planned.plan, acknowledgement);
+  const ack: Acknowledgement =
+    acknowledgement ?? {
+      toAdd: planned.plan.toAdd.length,
+      toRemove: planned.plan.toRemove.length,
+      confirmed: [],
+    };
+  const problem = checkAcknowledgement(planned.plan, ack);
   if (problem) {
     await finishJob(jobId, "PAUSED", problem);
     return;
@@ -436,7 +512,7 @@ async function runSync(
           ].map((entry) => ({
             ...entry,
             catalogId: catalog.recordId,
-            cause: "MANUAL" as const,
+            cause,
             ruleSummary: reason(entry.productId),
             syncJobId: jobId,
           })),
@@ -541,13 +617,15 @@ export async function finishJob(
 // ---------------------------------------------------------------------------
 
 /**
- * A job still "running" after this long, that this process isn't running,
- * was interrupted (e.g. by a restart).
+ * A job still "running" after this long was interrupted: the worker process
+ * that owned it crashed or was restarted mid-sync. Generous, since creating
+ * a publication (`createPublication`) alone can legitimately take up to 10
+ * minutes. BullMQ's own stalled-job detection (the worker was configured
+ * with the defaults) will usually mark the queue side failed well before
+ * this; this is the backstop for the SyncJob row when nothing catches that,
+ * e.g. the worker isn't running at all.
  */
 const STALE_JOB_MS = 60 * 60_000;
-
-/** Syncs running in this process. In-process until the queue (step 5). */
-const activeJobs = new Set<string>();
 
 async function runningJob(catalogRecordId: string) {
   const job = await prisma.syncJob.findFirst({
@@ -558,7 +636,6 @@ async function runningJob(catalogRecordId: string) {
   });
   if (
     job &&
-    !activeJobs.has(job.id) &&
     Date.now() - (job.startedAt ?? job.createdAt).getTime() > STALE_JOB_MS
   ) {
     await finishJob(
