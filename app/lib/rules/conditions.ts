@@ -178,7 +178,19 @@ export function operatorsFor(
   field: ConditionField,
   metafieldType?: string | null,
 ): ConditionOperator[] {
-  if (field !== "metafield") return FIELDS[field].operators;
+  return field === "metafield"
+    ? metafieldOperatorsFor(metafieldType)
+    : FIELDS[field].operators;
+}
+
+/**
+ * Operators a metafield condition can use, given its type. Shared with the
+ * assignment evaluator's company/location metafield conditions
+ * (`app/lib/assignment/conditions.ts`, Phase 2).
+ */
+export function metafieldOperatorsFor(
+  metafieldType?: string | null,
+): ConditionOperator[] {
   const kind = metafieldKind(metafieldType ?? "");
   return kind ? METAFIELD_OPERATORS[kind] : [];
 }
@@ -235,8 +247,7 @@ const METAFIELD_KEY = /^(\$app:)?[\w-]+\.[\w-]+$/;
 export function validateCondition(condition: RuleCondition): string | null {
   if (!isConditionField(condition.field))
     return `Unknown field "${condition.field}".`;
-  if (condition.field === "metafield")
-    return validateMetafieldCondition(condition);
+  if (condition.field === "metafield") return validateMetafieldValue(condition);
   const definition = FIELDS[condition.field];
 
   if (!definition.operators.includes(condition.operator as ConditionOperator)) {
@@ -255,28 +266,40 @@ export function validateCondition(condition: RuleCondition): string | null {
   return null;
 }
 
-function validateMetafieldCondition(condition: RuleCondition): string | null {
+/**
+ * Validates a metafield condition, whatever it's a condition on: a product
+ * metafield here, or a company/location metafield in the assignment
+ * evaluator (`app/lib/assignment/conditions.ts`, Phase 2), which passes its
+ * own field label ("Company metafield") in place of the default.
+ */
+export function validateMetafieldValue(
+  condition: Pick<
+    RuleCondition,
+    "operator" | "value" | "metafieldKey" | "metafieldType"
+  >,
+  label = "Metafield",
+): string | null {
   const key = condition.metafieldKey?.trim() ?? "";
-  if (!key) return "Choose a metafield.";
+  if (!key) return `Choose a ${label.toLowerCase()}.`;
   if (!METAFIELD_KEY.test(key)) return `"${key}" isn't a metafield key.`;
   if (!isSupportedMetafieldType(condition.metafieldType ?? "")) {
-    return `Metafield ${key} has a type rules can't use (${condition.metafieldType ?? "unknown"}).`;
+    return `${label} ${key} has a type rules can't use (${condition.metafieldType ?? "unknown"}).`;
   }
 
-  const operators = operatorsFor("metafield", condition.metafieldType);
+  const operators = metafieldOperatorsFor(condition.metafieldType);
   const operator = condition.operator as ConditionOperator;
   if (!operators.includes(operator))
-    return `Metafield ${key} can't use "${condition.operator}".`;
+    return `${label} ${key} can't use "${condition.operator}".`;
   if (!operatorTakesValue(operator)) return null;
 
   const value = condition.value?.trim() ?? "";
-  if (!value) return `Metafield ${key} needs a value.`;
+  if (!value) return `${label} ${key} needs a value.`;
   const kind = metafieldKind(condition.metafieldType ?? "");
   if (kind === "number" && !Number.isFinite(Number(value))) {
-    return `Metafield ${key} needs a number.`;
+    return `${label} ${key} needs a number.`;
   }
   if (kind === "boolean" && value !== "true" && value !== "false") {
-    return `Metafield ${key} must be true or false.`;
+    return `${label} ${key} must be true or false.`;
   }
   return null;
 }
@@ -300,21 +323,35 @@ export function describeCondition(
       ? "On the Online Store"
       : "Not on the Online Store";
   }
-  if (condition.field === "metafield") {
-    const key = condition.metafieldKey ?? "";
-    const name = nameFor(key) ?? key;
-    const operator = OPERATOR_LABELS[condition.operator];
-    if (!operatorTakesValue(condition.operator)) return `${name} ${operator}`;
-    const value =
-      metafieldKind(condition.metafieldType ?? "") === "boolean"
-        ? condition.value === "true"
-          ? "true"
-          : "false"
-        : condition.value;
-    return `${name} ${operator} ${value}`;
-  }
+  if (condition.field === "metafield") return describeMetafieldValue(condition, nameFor);
   const definition = FIELDS[condition.field];
   const option = definition.options?.find((o) => o.value === condition.value);
   const value = option?.label ?? nameFor(condition.value) ?? condition.value;
   return `${definition.label} ${operatorLabel(condition.field, condition.operator)} ${value}`;
+}
+
+/**
+ * Readable form of a metafield condition, e.g. "Trade tier is gold". Shared
+ * with the assignment evaluator's company/location metafield conditions
+ * (`app/lib/assignment/conditions.ts`, Phase 2).
+ */
+export function describeMetafieldValue(
+  condition: Pick<
+    ValidCondition,
+    "operator" | "value" | "metafieldKey" | "metafieldType"
+  >,
+  /** Turns a metafield key into its definition name */
+  nameFor: (key: string) => string | undefined = () => undefined,
+): string {
+  const key = condition.metafieldKey ?? "";
+  const name = nameFor(key) ?? key;
+  const operator = OPERATOR_LABELS[condition.operator];
+  if (!operatorTakesValue(condition.operator)) return `${name} ${operator}`;
+  const value =
+    metafieldKind(condition.metafieldType ?? "") === "boolean"
+      ? condition.value === "true"
+        ? "true"
+        : "false"
+      : condition.value;
+  return `${name} ${operator} ${value}`;
 }

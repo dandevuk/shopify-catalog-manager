@@ -108,7 +108,9 @@ model Catalog {
 
   shop      Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
   template  RuleSet?        @relation("TemplateCatalogs", fields: [templateId], references: [id], onDelete: SetNull)
-  ruleSet   RuleSet?        @relation("CatalogRuleSet")
+  /// The CATALOG rule set (product membership) and, for a COMPANY_LOCATION
+  /// catalog, the ASSIGNMENT rule set (Phase 2), keyed by RuleSet.kind.
+  ruleSets  RuleSet[]       @relation("CatalogRuleSet")
   overrides Override[]
   syncJobs  SyncJob[]
   auditLog  AuditLogEntry[]
@@ -119,6 +121,9 @@ model Catalog {
 enum RuleSetKind {
   CATALOG
   TEMPLATE
+  /// Which company locations get access to a COMPANY_LOCATION catalog
+  /// (Phase 2). Only ever paired with a catalog, never a template.
+  ASSIGNMENT
 }
 
 enum MatchMode {
@@ -126,15 +131,17 @@ enum MatchMode {
   ANY
 }
 
-/// Rules for one catalog, or a reusable template shared by many catalogs.
+/// Rules for one catalog (product membership or, for a COMPANY_LOCATION
+/// catalog, location assignment), or a reusable template shared by many
+/// catalogs. A catalog can own at most one rule set per kind.
 model RuleSet {
   id           String      @id @default(cuid())
   shopId       String
   kind         RuleSetKind
   /// Template name (templates only)
   name         String?
-  /// Owning catalog (catalog rule sets only)
-  catalogId    String?     @unique
+  /// Owning catalog (catalog and assignment rule sets only)
+  catalogId    String?
   includeMatch MatchMode   @default(ALL)
   excludeMatch MatchMode   @default(ANY)
   createdAt    DateTime    @default(now())
@@ -144,6 +151,8 @@ model RuleSet {
   catalog          Catalog?    @relation("CatalogRuleSet", fields: [catalogId], references: [id], onDelete: Cascade)
   templateCatalogs Catalog[]   @relation("TemplateCatalogs")
   conditions       Condition[]
+
+  @@unique([catalogId, kind])
 }
 
 enum ConditionGroup {

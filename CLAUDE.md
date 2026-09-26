@@ -105,6 +105,16 @@ shows otherwise:
     comes from older catalogs or API-created ones, so managed mode's
     publication-creating path is untested on the dev store. Syncs are refused while a
     catalog operation is CREATED or ACTIVE (managed mode test, Sep 2026).
+20. **`read_companies` alone is enough for company/location assignment data, with no
+    `read_customers`**: confirmed live on the dev store (Sep 2026) with only
+    `read_companies` granted, for the top-level `companyLocations` and `companies`
+    queries, `CompanyLocation.metafields`, `Company.metafields` (read through
+    `CompanyLocation.company`), and `CompanyLocation.catalogs`. This matters because a
+    static GraphQL schema validator reported `read_customers` as a required scope for
+    the same fields; that's wrong (or at least overly conservative) for this store, so
+    trust a live probe over the validator's declared scopes when they disagree. Confirms
+    the "stay clear of customer data" design decision for B2B assignment rules
+    (Phase 2) is achievable as planned.
 
 ## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
@@ -163,6 +173,10 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   `includedProducts` for the builder. Text matching ignores case and surrounding spaces;
   an empty include group matches nothing; a rule set with any broken condition isn't
   evaluated at all.
+- `app/lib/assignment/conditions.ts`, `evaluate.ts` (Phase 2): B2B catalog assignment
+  rules. Metafield-only conditions (`company_metafield`, `location_metafield`) and an
+  evaluator that decides which company locations get access to a catalog, mirroring
+  `app/lib/rules` but with no exclude group or overrides (assignment is additive only).
 - `app/lib/product-index/metafields.ts`: which product metafields the index keeps
   (text, numbers, booleans, lists of text; values up to 1,000 characters), stored in
   `ProductIndex.metafields` keyed by "namespace.key". Metafield conditions store
@@ -230,30 +244,83 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    effect immediately. Requires `npm run worker` running (a separate terminal in dev);
    syncs no longer run in-process on the web server.
 
-## Planned features (not yet scheduled)
+## Phase 2 next steps
 
-**B2B catalog assignment rules** (idea from Dan, Sep 2026). **Decided: the first feature
-after Phase 1, using company and location data only** (metafields); no customer segments
-or customer tags for now, so the app stays clear of customer data. Today a merchant assigns a
-B2B catalog to each company location by hand. The app could show every assignment and
-assign catalogs automatically from rules, e.g. "locations whose company has
-`custom.customer_type = wholesale` get the Wholesale catalog". Checked against the
+**B2B catalog assignment rules** (idea from Dan, Sep 2026, started Sep 2026). Today a
+merchant assigns a B2B catalog to each company location by hand. The app shows every
+assignment and assigns catalogs automatically from rules, e.g. "locations whose company
+has `custom.customer_type = wholesale` get the Wholesale catalog". Checked against the
 2026-07 schema:
 
 - Assign with `catalogContextUpdate(catalogId, contextsToAdd/contextsToRemove:
-  { companyLocationIds })`. Needs **`write_products`** (not requested today).
+  { companyLocationIds })`. Needs **`write_products`** (not requested today): adding the
+  scope means an existing install's merchant must re-consent (scope update flow).
 - Rule data: `Company.metafields` and `CompanyLocation.metafields` (with
   `read_companies`). Companies and locations have **no tags** field.
 - A catalog's contexts can only be markets or company locations: there is **no
-  customer segment or customer tag context**. Assigning by segment or customer tag would
-  mean mapping customers (company contacts) to locations, which needs `read_customers`
-  (protected customer data). That reverses the current "no customer data" stance, so
-  decide deliberately.
-- Reacting to new locations needs `company_locations/*` webhooks (protected customer
-  data) or a scheduled scan of company locations.
+  customer segment or customer tag context**, so assigning by segment/customer tag
+  (which needs `read_customers`, protected customer data) stays out of scope.
 - Only Plus shops can have `CompanyLocationCatalog`s (finding 11), so this is a Plus
   feature.
+
+Design decisions (Sep 2026):
+
+- **A location can match more than one catalog.** No "exactly one winner" rule: rules
+  are evaluated independently per catalog, same as product rules today, so a location
+  simply gets added wherever it matches.
+- **Additive only, never reconciled.** Applying rules only adds `CompanyLocationCatalog`
+  contexts for locations that match; it never removes a context a merchant (or a
+  previous rule run) already set, even if no rule currently matches it. No "drift"
+  concept here, unlike managed mode's product sync.
+- **Manual apply first.** Ship preview + a merchant-confirmed "Apply assignments" action
+  (same shape as managed mode's original step 4); a scheduled automatic re-scan is a
+  later step once manual is tested, not built in the same phase. `company_locations/*`
+  webhooks stay unused (protected customer data): reacting to new locations means a
+  scheduled scan, not a webhook.
+- **Reuse the existing rule engine.** Company/location counts are far smaller than
+  product counts, so v1 reads them live (paginated GraphQL) at preview/apply time rather
+  than building a bulk index like the product index.
 - Record the plan change in the claude.ai project plan too (it's the working copy).
+
+Steps:
+
+1. ~~Data model and evaluator~~: done and tested (Sep 2026), not yet on the dev store.
+   Added `ASSIGNMENT` to `RuleSetKind` (alongside `CATALOG`/`TEMPLATE`), so a
+   `COMPANY_LOCATION` catalog can hold two independent rule sets: the existing product
+   include/exclude rules (which products the catalog contains), and a new assignment
+   rule set (which company locations get access to it). `RuleSet`'s `@unique` on
+   `catalogId` widened to `@@unique([catalogId, kind])`. The assignment rule set only
+   has an include group for v1 (no exclude), with its own field vocabulary
+   (`company_metafield`, `location_metafield`, both metafield-only per the "no tags"
+   finding above): `app/lib/assignment/conditions.ts`, `evaluate.ts`. The metafield
+   matching itself is shared with product rules (`matchesMetafieldCondition`, exported
+   from `app/lib/rules/evaluate.ts`): company and location metafields are indexed the
+   same shape as product metafields (`IndexedMetafields`).
+2. ~~Data layer~~: done and tested live against the dev store (Sep 2026, confirmed
+   finding 20 above). `app/lib/assignment/locations.server.ts`: the top-level
+   `companyLocations(first, after)` query (not `company.locations`, to avoid an N+1
+   read per company), each location's `company { id name metafields }`, its own
+   `metafields`, and its `catalogs { nodes { id } }` for current context (the additive
+   diff). Paginated the same way as `listCollections`/`listMetafieldDefinitions`.
+3. ~~Rule builder UI and preview~~: done and tested end to end on the dev store (Sep
+   2026). Added to the existing rule builder page (`app/routes/app.catalogs.$catalogId.tsx`),
+   shown only for `COMPANY_LOCATION` catalogs: an "Assignment conditions" editor (its own
+   ALL/ANY match mode, metafield picker scoped to `company_metafield`/`location_metafield`
+   definitions, reusing the product builder's `MetafieldValue` component) and an
+   "Assignment preview" section (locations sorted into would-be-added, already-assigned
+   and doesn't-match, with a reason per row), following the same 500ms-debounced live
+   preview pattern as product rules. New action intents `assignment-preview` and
+   `assignment-save`, alongside the existing `preview`/`save`. Verified against the dev
+   store fixtures: a `company_metafield` "Customer type is wholesale" condition correctly
+   reported Powderbound as "already assigned" (it already has this catalog's context) and
+   Snowdevil/Alpine VIP Outfitters as not matching; the saved rule persisted across a
+   page reload.
+4. Apply: `catalogContextUpdate`, additive only (per the design decision above). Needs
+   the `write_products` scope added and the existing-install re-consent flow.
+5. Automatic re-scan (later step, same shape as the job queue): a scheduled scan, no
+   `company_locations/*` webhooks.
+
+## Planned features (not yet scheduled)
 
 **Sidekick integration** (idea from Dan, Sep 2026). **Decided: a requirement**, not
 optional. Goal: a merchant can type a prompt like "make a catalog for VIP users, company
@@ -296,7 +363,23 @@ catalog (Powderbound company, Dan is a contact), 140 products (120 tagged `spike
 with vendors, types, market tags and a `custom.trade_tier` metafield), and a
 "Spike: Driftline (smart)" collection. Added during managed mode testing (Sep 2026):
 "Sync Test" and "Sync Test 2" Market catalogs (United States), both created via the
-admin so both got a publication (finding 19); safe to delete or reuse.
+admin so both got a publication (finding 19); safe to delete or reuse. Two companies,
+each with one location, checked during Phase 2's data layer work (Sep 2026): Powderbound
+(location assigned to the "Spike: Powderbound trade" catalog) and Snowdevil (location
+with no catalog context yet). Metafield definitions added for Phase 2 testing (Sep
+2026): `custom.customer_type` on Company, `custom.region` on CompanyLocation. Values
+set: Powderbound `wholesale`/`ca` (its location is genuinely US-market, so this is an
+arbitrary test label, not a real region), Snowdevil `retail`/`us`. A third test company,
+Alpine VIP Outfitters (created via the admin, no real contact), has `custom.customer_type
+= vip` and no location metafield: matches the original Sidekick example prompt ("make a
+catalog for VIP users..."). Its location has no catalog context either.
+
+Gotcha confirmed while setting these up: the admin's own company/location pages show a
+broader "Catalogs" list (e.g. Snowdevil shows "Catalog for Canada", Alpine VIP Outfitters
+shows "Sync Test"/"Sync Test 2") than `CompanyLocation.catalogs` returns over the API
+(empty for both). The admin display includes market-catalog eligibility; the GraphQL
+field is scoped to actual `CompanyLocationCatalog` contexts (confirmed via
+`listAssignmentLocations`), which is what `app/lib/assignment` needs and already uses.
 
 ## Commands
 
