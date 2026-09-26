@@ -115,6 +115,18 @@ shows otherwise:
     trust a live probe over the validator's declared scopes when they disagree. Confirms
     the "stay clear of customer data" design decision for B2B assignment rules
     (Phase 2) is achievable as planned.
+21. **A Market's catalog does not gate storefront visibility the way a B2B catalog does
+    (finding 6 doesn't extend to Markets)**: checked on the dev store (Sep 2026) using
+    the "Sync Test" catalog (United States market). A product published to the Online
+    Store channel but excluded from Sync Test's catalog still rendered its storefront
+    product page normally under both the United States and Canada "view as" contexts (a
+    plain product URL 404s only when the product isn't published to Online Store at
+    all, regardless of any market catalog). So unlike B2B, there's no "in catalog AND on
+    Online Store" condition for Markets: the Online Store publication is the only gate,
+    the same as for any anonymous visitor. The rule builder's "not visible" flag
+    (`checkVisibility` in `app/lib/rules/preview.ts`) is correctly B2B-only as it stands;
+    no equivalent warning is needed for Market catalogs. Closes the last open item from
+    Phase 1 step 3.
 
 ## Scopes and webhooks (settled Sep 2026, Diagnostics on the dev store)
 
@@ -214,8 +226,9 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    plus metafield conditions (PR #3) and a category picker (search-as-you-type over
    Shopify's product taxonomy, tested end to end on the dev store Sep 2026: search,
    selection, persistence with the friendly breadcrumb name, and a working preview).
-   Still open: the "not visible" warning for Market catalogs (only B2B was checked on
-   the storefront, finding 6).
+   Checked whether the "not visible" warning (finding 6) should extend to Market
+   catalogs: it shouldn't, confirmed live on the dev store (Sep 2026, finding 21).
+   Phase 1 is now complete.
 4. ~~Managed mode~~ (`app/lib/sync/plan.ts`, `apply.server.ts`, `managed.server.ts`): done
    and tested on the dev store (Sep 2026), PR #4. "Apply to Shopify" on the rules page.
    Uses the saved rules; creates the publication if missing, turns autoPublish off,
