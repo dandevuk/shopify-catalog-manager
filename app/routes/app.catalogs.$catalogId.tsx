@@ -63,6 +63,7 @@ import {
 import { countProducts } from "../lib/product-index/store.server";
 import {
   getCatalogMembership,
+  getCategoryNames,
   listCollections,
   listRuleMetafields,
   loadIndexProducts,
@@ -71,6 +72,8 @@ import {
   loadRules,
   ruleNames,
   saveRules,
+  searchCategories,
+  type RuleCategory,
   type RuleMetafieldDefinition,
   type SavedRules,
 } from "../lib/rules/rules.server";
@@ -120,6 +123,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       isB2B ? loadAssignmentRules(catalog.recordId) : null,
       isB2B ? listAssignmentMetafieldDefinitions(admin) : [],
     ]);
+  // Depends on which categories the saved rules use, so this can only start
+  // once `rules` is in.
+  const savedCategoryIds = (rules?.conditions ?? []).flatMap((c) =>
+    c.field === "category" && c.value ? [c.value] : [],
+  );
+  const categoryNames = await getCategoryNames(admin, savedCategoryIds);
 
   return {
     catalog: {
@@ -136,6 +145,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
     collections,
     metafieldDefinitions,
+    categoryNames: [...categoryNames],
     indexedProducts: await countProducts(shop.id),
     syncStatus: await getSyncStatus(catalog.recordId),
     /** False until rules are saved for this catalog the first time */
@@ -159,7 +169,12 @@ export const shouldRevalidate: ShouldRevalidateFunction = ({
   defaultShouldRevalidate,
 }) => {
   const intent = (actionResult as ActionResult | undefined)?.intent;
-  if (intent === "preview" || intent === "assignment-preview") return false;
+  if (
+    intent === "preview" ||
+    intent === "assignment-preview" ||
+    intent === "search-categories"
+  )
+    return false;
   return defaultShouldRevalidate;
 };
 
@@ -178,7 +193,8 @@ type ActionResult =
       errors: string[];
     }
   | { intent: "assignment-save"; ok: true }
-  | { intent: "assignment-apply"; ok: true; added: number };
+  | { intent: "assignment-apply"; ok: true; added: number }
+  | { intent: "search-categories"; categories: RuleCategory[] };
 
 export const action = async ({
   request,
@@ -194,11 +210,20 @@ export const action = async ({
       | "stop-managing"
       | "assignment-preview"
       | "assignment-save"
-      | "assignment-apply";
+      | "assignment-apply"
+      | "search-categories";
     rules?: SavedRules;
     assignmentRules?: SavedAssignmentRules;
     acknowledgement?: Acknowledgement;
+    query?: string;
   };
+
+  if (body.intent === "search-categories") {
+    return {
+      intent: "search-categories",
+      categories: await searchCategories(admin, body.query ?? ""),
+    };
+  }
 
   if (body.intent === "sync-preview") {
     return {
@@ -420,10 +445,7 @@ function sanitiseAssignmentRules(
 // Page
 // ---------------------------------------------------------------------------
 
-/** Category needs a taxonomy picker, so it isn't offered in the builder yet. */
-const BUILDER_FIELDS = (Object.keys(FIELDS) as ConditionField[]).filter(
-  (f) => f !== "category",
-);
+const BUILDER_FIELDS = Object.keys(FIELDS) as ConditionField[];
 
 interface EditableCondition {
   key: string;
@@ -563,6 +585,7 @@ export default function RuleBuilderPage() {
     rules,
     collections,
     metafieldDefinitions,
+    categoryNames: loadedCategoryNames,
     indexedProducts,
     syncStatus,
     hasSavedRules,
@@ -571,6 +594,11 @@ export default function RuleBuilderPage() {
     assignmentMetafieldDefinitions,
   } = useLoaderData<typeof loader>();
   const isB2B = catalog.type === "COMPANY_LOCATION";
+  // Grows as the merchant searches for and picks categories, seeded with
+  // names for whatever the saved rules already use.
+  const [categoryNames, setCategoryNames] = useState<Map<string, string>>(
+    () => new Map(loadedCategoryNames),
+  );
   const { catalogId: catalogParam = "" } = useParams();
   const navigate = useNavigate();
   const previewFetcher = useFetcher<typeof action>();
@@ -756,6 +784,10 @@ export default function RuleBuilderPage() {
         errors={errors}
         collections={collections}
         metafieldDefinitions={metafieldDefinitions}
+        categoryNames={categoryNames}
+        onCategoryNamed={(id, name) =>
+          setCategoryNames((m) => new Map(m).set(id, name))
+        }
         onAdd={() =>
           setState((s) => ({
             ...s,
@@ -782,6 +814,10 @@ export default function RuleBuilderPage() {
         errors={errors}
         collections={collections}
         metafieldDefinitions={metafieldDefinitions}
+        categoryNames={categoryNames}
+        onCategoryNamed={(id, name) =>
+          setCategoryNames((m) => new Map(m).set(id, name))
+        }
         onAdd={() =>
           setState((s) => ({
             ...s,
@@ -1285,6 +1321,8 @@ function ConditionGroupEditor({
   errors,
   collections,
   metafieldDefinitions,
+  categoryNames,
+  onCategoryNamed,
   onAdd,
   onRemove,
   onChange,
@@ -1299,6 +1337,8 @@ function ConditionGroupEditor({
   errors: (string | null)[];
   collections: { id: string; title: string }[];
   metafieldDefinitions: RuleMetafieldDefinition[];
+  categoryNames: Map<string, string>;
+  onCategoryNamed: (id: string, name: string) => void;
   onAdd: () => void;
   onRemove: (key: string) => void;
   onChange: (key: string, change: Partial<EditableCondition>) => void;
@@ -1334,6 +1374,8 @@ function ConditionGroupEditor({
             error={condition.value.trim() ? error : null}
             collections={collections}
             metafieldDefinitions={metafieldDefinitions}
+            categoryNames={categoryNames}
+            onCategoryNamed={onCategoryNamed}
             onChange={(change) => onChange(condition.key, change)}
             onFieldChange={(field) => onFieldChange(condition.key, field)}
             onRemove={() => onRemove(condition.key)}
@@ -1365,6 +1407,8 @@ function ConditionRow({
   error,
   collections,
   metafieldDefinitions,
+  categoryNames,
+  onCategoryNamed,
   onChange,
   onFieldChange,
   onRemove,
@@ -1373,6 +1417,8 @@ function ConditionRow({
   error: string | null;
   collections: { id: string; title: string }[];
   metafieldDefinitions: RuleMetafieldDefinition[];
+  categoryNames: Map<string, string>;
+  onCategoryNamed: (id: string, name: string) => void;
   onChange: (change: Partial<EditableCondition>) => void;
   onFieldChange: (field: ConditionField) => void;
   onRemove: () => void;
@@ -1529,6 +1575,17 @@ function ConditionRow({
                 ))}
               </s-select>
             )}
+
+            {definition.valueKind === "category" && (
+              <CategoryValue
+                value={condition.value}
+                name={categoryNames.get(condition.value)}
+                onChange={(id, name) => {
+                  onCategoryNamed(id, name);
+                  onChange({ value: id });
+                }}
+              />
+            )}
           </>
         )}
 
@@ -1605,6 +1662,77 @@ function MetafieldValue({
       error={error ?? undefined}
       onInput={(event) => onChange(event.currentTarget.value)}
     />
+  );
+}
+
+/**
+ * The value input for a category condition: search-as-you-type over
+ * Shopify's product taxonomy (thousands of categories, so unlike
+ * collections there's no full list to preload), picking from the results.
+ */
+function CategoryValue({
+  value,
+  name,
+  onChange,
+}: {
+  value: string;
+  /** The selected category's full breadcrumb name, if known */
+  name: string | undefined;
+  onChange: (id: string, name: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const searchFetcher = useFetcher<typeof action>();
+  const results =
+    query.trim() && searchFetcher.data?.intent === "search-categories"
+      ? searchFetcher.data.categories
+      : [];
+
+  useEffect(() => {
+    if (!query.trim()) return;
+    const timer = setTimeout(() => {
+      searchFetcher.submit({ intent: "search-categories", query } as never, {
+        method: "post",
+        encType: "application/json",
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+    // searchFetcher.submit is stable; query is the real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  return (
+    <s-stack direction="block" gap="small-200">
+      <s-text-field
+        label="Search categories"
+        labelAccessibilityVisibility="exclusive"
+        placeholder="Search categories, e.g. Snowboards"
+        value={query}
+        onInput={(event) => setQuery(event.currentTarget.value)}
+      />
+      <s-select
+        label="Category"
+        labelAccessibilityVisibility="exclusive"
+        placeholder="Choose a category"
+        value={value}
+        onChange={(event) => {
+          const chosen = results.find(
+            (category) => category.id === event.currentTarget.value,
+          );
+          onChange(event.currentTarget.value, chosen?.fullName ?? name ?? "");
+        }}
+      >
+        {/* Keeps the current selection visible even when it's not (or no
+            longer) among the search results. */}
+        {value && !results.some((category) => category.id === value) && (
+          <s-option value={value}>{name ?? value}</s-option>
+        )}
+        {results.map((category) => (
+          <s-option key={category.id} value={category.id}>
+            {category.fullName}
+          </s-option>
+        ))}
+      </s-select>
+    </s-stack>
   );
 }
 

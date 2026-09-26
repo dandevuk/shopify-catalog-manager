@@ -506,8 +506,9 @@ export function forgetCatalogMembership(publicationId: string): void {
 }
 
 /**
- * Names for the collections and metafields a rule set uses, so reasons read
- * "Collection is in Home page" and "Trade tier is gold".
+ * Names for the collections, metafields and categories a rule set uses, so
+ * reasons read "Collection is in Home page", "Trade tier is gold" and
+ * "Category is Snowboards".
  */
 export async function ruleNames(
   admin: AdminGraphqlClient,
@@ -516,13 +517,91 @@ export async function ruleNames(
   const collectionIds = conditions.flatMap((c) =>
     c.field === "in_collection" && c.value ? [c.value] : [],
   );
+  const categoryIds = conditions.flatMap((c) =>
+    c.field === "category" && c.value ? [c.value] : [],
+  );
   const usesMetafields = conditions.some((c) => c.field === "metafield");
-  const [collectionNames, definitions] = await Promise.all([
+  const [collectionNames, categoryNames, definitions] = await Promise.all([
     getCollectionNames(admin, collectionIds),
+    getCategoryNames(admin, categoryIds),
     usesMetafields ? listMetafieldDefinitions(admin) : [],
   ]);
-  const names = new Map(collectionNames);
+  const names = new Map([...collectionNames, ...categoryNames]);
   for (const definition of definitions)
     names.set(definition.key, definition.name);
   return names;
+}
+
+// ---------------------------------------------------------------------------
+// Category (taxonomy) picker
+// ---------------------------------------------------------------------------
+
+export interface RuleCategory {
+  /** Taxonomy category GID, e.g. "gid://shopify/TaxonomyCategory/sg-4-17-2-17" */
+  id: string;
+  name: string;
+  /** Full breadcrumb, e.g. "Sporting Goods > Outdoor Recreation > Snowboarding > Snowboards" */
+  fullName: string;
+}
+
+const CATEGORY_SEARCH_QUERY = `#graphql
+  query RuleBuilderCategorySearch($search: String!) {
+    taxonomy {
+      categories(search: $search, first: 20) {
+        nodes {
+          id
+          name
+          fullName
+        }
+      }
+    }
+  }
+`;
+
+interface CategorySearchResult {
+  taxonomy: { categories: { nodes: RuleCategory[] } };
+}
+
+/** Categories matching a search term, for the rule builder's category picker. */
+export async function searchCategories(
+  admin: AdminGraphqlClient,
+  search: string,
+): Promise<RuleCategory[]> {
+  if (!search.trim()) return [];
+  const { data } = await runGraphql<CategorySearchResult>(admin, CATEGORY_SEARCH_QUERY, {
+    search,
+  });
+  return data.taxonomy.categories.nodes;
+}
+
+const CATEGORY_NAMES_QUERY = `#graphql
+  query RuleBuilderCategoryNames($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on TaxonomyCategory {
+        id
+        name
+        fullName
+      }
+    }
+  }
+`;
+
+/**
+ * Full names for the given categories only: a saved rule's category
+ * condition needs its breadcrumb name without searching the whole taxonomy.
+ */
+export async function getCategoryNames(
+  admin: AdminGraphqlClient,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const { data } = await runGraphql<{
+    nodes: ({ id?: string; fullName?: string } | null)[];
+  }>(admin, CATEGORY_NAMES_QUERY, { ids: unique });
+  return new Map(
+    data.nodes.flatMap((node) =>
+      node?.id && node.fullName ? [[node.id, node.fullName] as const] : [],
+    ),
+  );
 }
