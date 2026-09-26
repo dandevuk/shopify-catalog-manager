@@ -355,8 +355,20 @@ with vendors, types, market tags and a `custom.trade_tier` metafield), and a
 admin so both got a publication (finding 19); safe to delete or reuse. Two companies,
 each with one location, checked during Phase 2's data layer work (Sep 2026): Powderbound
 (location assigned to the "Spike: Powderbound trade" catalog) and Snowdevil (location
-with no catalog context yet). Neither has any metafields set yet; add some (e.g.
-`custom.customer_type`) before testing assignment rules end to end.
+with no catalog context yet). Metafield definitions added for Phase 2 testing (Sep
+2026): `custom.customer_type` on Company, `custom.region` on CompanyLocation. Values
+set: Powderbound `wholesale`/`ca` (its location is genuinely US-market, so this is an
+arbitrary test label, not a real region), Snowdevil `retail`/`us`. A third test company,
+Alpine VIP Outfitters (created via the admin, no real contact), has `custom.customer_type
+= vip` and no location metafield: matches the original Sidekick example prompt ("make a
+catalog for VIP users..."). Its location has no catalog context either.
+
+Gotcha confirmed while setting these up: the admin's own company/location pages show a
+broader "Catalogs" list (e.g. Snowdevil shows "Catalog for Canada", Alpine VIP Outfitters
+shows "Sync Test"/"Sync Test 2") than `CompanyLocation.catalogs` returns over the API
+(empty for both). The admin display includes market-catalog eligibility; the GraphQL
+field is scoped to actual `CompanyLocationCatalog` contexts (confirmed via
+`listAssignmentLocations`), which is what `app/lib/assignment` needs and already uses.
 
 ## Commands
 
