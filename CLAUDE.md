@@ -413,11 +413,27 @@ link.
   imply anything was created or changed in Shopify.
 - Two new authenticated routes (e.g. `api.sidekick.search-catalogs.tsx`,
   `api.sidekick.describe-catalog.tsx`) using the existing `authenticate.admin` pattern.
-  An admin extension's backend calls carry the same ID-token auth as any other embedded
-  admin request, so **no CORS allowlist change is needed** (the earlier plan assumed
-  otherwise; that was wrong). **No new Admin API scopes either**: everything the tools
-  read (`Catalog`, `RuleSet`, `Condition`) is already in the app's own Postgres tables,
-  no live Shopify GraphQL calls needed for the search itself.
+  **Corrected after live testing (Sep 2026):** the extension's call really is
+  cross-origin (an earlier plan draft assumed it wasn't and that no CORS handling was
+  needed; that was wrong). The browser sends a CORS preflight `OPTIONS` request before
+  the real `POST`, and React Router only ever routes `OPTIONS` to a route's `loader`,
+  never its `action`. A resource route with only an `action` makes that preflight fail
+  outright (a router-level error, not even reaching our code), which aborts the real
+  request before it's sent; to Sidekick that looks exactly like it can't reach the app
+  at all ("connection issue"), with nothing useful in the app's own logs. The fix: add a
+  `loader` that also calls `authenticate.admin(request)` (it replies to an `OPTIONS`
+  request itself, via `respondToOptionsRequest`, with a 204 and the right
+  `Access-Control-Allow-*` headers) and wrap every actual response in the `cors` helper
+  `authenticate.admin` returns, e.g. `return cors(Response.json({ results }))`. No new
+  Admin API scopes needed: everything the tools read (`Catalog`, `RuleSet`, `Condition`)
+  is already in the app's own Postgres tables, no live Shopify GraphQL calls needed for
+  the search itself.
+  - Diagnostic gotcha: testing this route directly with `curl` can be misleading.
+    `curl`'s default User-Agent gets flagged by the library's bot detection
+    (`respondToBotRequest`, via `isbot`), which throws its own 410 *before*
+    `respondToOptionsRequest` ever runs, giving a 410-with-CORS-headers response that
+    looks like a real failure. Set a browser-like `User-Agent` header to see the actual
+    204 a real browser would get.
 - Add the required `[sidekick] extensions_summary` to `shopify.app.toml`.
 - Open implementation detail: the clickable admin URL needs the app's handle (differs
   dev vs production) and the store handle derived from the shop domain; a small config
