@@ -9,8 +9,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 const remove = vi.fn().mockResolvedValue(1);
 const add = vi.fn().mockResolvedValue(undefined);
+const upsertJobScheduler = vi.fn().mockResolvedValue(undefined);
 vi.mock("bullmq", () => ({
-  Queue: vi.fn().mockImplementation(() => ({ remove, add })),
+  Queue: vi.fn().mockImplementation(() => ({ remove, add, upsertJobScheduler })),
 }));
 vi.mock("./connection.server", () => ({ redisConnection: vi.fn() }));
 vi.mock("../../db.server", () => ({ default: { catalog: { findMany: vi.fn() } } }));
@@ -29,7 +30,9 @@ const {
   scheduleCollectionRecheck,
   scheduleCatalogSync,
   scheduleManagedCatalogSyncs,
+  scheduleAssignmentScan,
   CATALOG_SYNC_DEBOUNCE_MS,
+  ASSIGNMENT_SCAN_INTERVAL_MS,
 } = await import("./queues.server");
 const prisma = (await import("../../db.server")).default;
 
@@ -43,6 +46,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   remove.mockResolvedValue(1);
   add.mockResolvedValue(undefined);
+  upsertJobScheduler.mockResolvedValue(undefined);
 });
 
 describe("scheduleProductRecheck", () => {
@@ -158,5 +162,27 @@ describe("scheduleManagedCatalogSyncs", () => {
     await scheduleManagedCatalogSyncs("shop.myshopify.com");
     await flush();
     expect(add).not.toHaveBeenCalled();
+  });
+});
+
+describe("scheduleAssignmentScan", () => {
+  it("upserts a single repeating job scheduler at the scan interval", async () => {
+    await scheduleAssignmentScan();
+
+    expect(upsertJobScheduler).toHaveBeenCalledTimes(1);
+    expect(upsertJobScheduler).toHaveBeenCalledWith(
+      "assignment-scan",
+      { every: ASSIGNMENT_SCAN_INTERVAL_MS },
+      expect.objectContaining({ name: "scan" }),
+    );
+  });
+
+  it("calling it again upserts the same scheduler rather than adding a new one", async () => {
+    await scheduleAssignmentScan();
+    await scheduleAssignmentScan();
+
+    expect(upsertJobScheduler).toHaveBeenCalledTimes(2);
+    const ids = upsertJobScheduler.mock.calls.map((call) => call[0]);
+    expect(new Set(ids).size).toBe(1);
   });
 });

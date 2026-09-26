@@ -10,6 +10,7 @@ import {
   type AdminGraphqlClient,
   type GraphqlResult,
 } from "../shopify/graphql.server";
+import { waitForCost } from "../sync/apply.server";
 import type { AssignmentConditionField } from "./conditions";
 import type { RuleLocation } from "./evaluate";
 
@@ -87,7 +88,12 @@ export interface AssignmentLocation extends RuleLocation {
 /**
  * Every company location on the shop, read a page at a time from the
  * top-level `companyLocations` query (not `company.locations`, which would
- * mean one round trip per company).
+ * mean one round trip per company). Waits out the throttle bucket between
+ * pages the same way `sync/apply.server.ts` does for repeated writes
+ * (CLAUDE.md's "Measured performance": non-Plus shops have a much smaller
+ * bucket) — though every shop that can reach this code is on Plus, since B2B
+ * catalogs are a Plus-only feature (finding 11), so this is mostly headroom
+ * for a shop with many locations, not an expected everyday wait.
  */
 const MAX_PAGES = 20;
 
@@ -117,6 +123,8 @@ export async function listAssignmentLocations(
     const { hasNextPage, endCursor } = result.data.companyLocations.pageInfo;
     if (!hasNextPage || !endCursor) break;
     cursor = endCursor;
+    const wait = waitForCost(result.cost);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   }
 
   return locations;
