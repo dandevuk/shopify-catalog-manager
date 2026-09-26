@@ -326,7 +326,7 @@ Steps:
    *saved* rules against a fresh location read (never trusts the client's rules or a
    stale preview) before applying. `write_products` added to `shopify.app.toml`; on this
    personal dev store the new scope was **auto-granted** on the next `npm run dev`
-   restart, with no manual re-consent click needed (confirmed Sep 2026) — a real
+   restart, with no manual re-consent click needed (confirmed Sep 2026). A real
    merchant install would still need to reopen the app to approve it.
 5. Automatic re-scan (later step, same shape as the job queue): a scheduled scan, no
    `company_locations/*` webhooks.

@@ -50,6 +50,7 @@ import {
 } from "../lib/assignment/locations.server";
 import {
   buildAssignmentPreview,
+  isUnassignedMatch,
   type AssignmentPreview,
   type AssignmentPreviewRow,
 } from "../lib/assignment/preview";
@@ -177,7 +178,7 @@ type ActionResult =
       errors: string[];
     }
   | { intent: "assignment-save"; ok: true }
-  | { intent: "assignment-apply"; ok: true; added: number; error: string | null };
+  | { intent: "assignment-apply"; ok: true; added: number };
 
 export const action = async ({
   request,
@@ -289,7 +290,10 @@ export const action = async ({
     // Always the saved rules, never what the client posts: the button is
     // disabled while there are unsaved edits, and applying should only ever
     // do what's actually saved.
-    const savedRules = await loadAssignmentRules(catalog.recordId);
+    const [savedRules, locations] = await Promise.all([
+      loadAssignmentRules(catalog.recordId),
+      listAssignmentLocations(admin),
+    ]);
     if (!savedRules) {
       return {
         intent: "assignment-apply",
@@ -297,7 +301,6 @@ export const action = async ({
         errors: ["Save assignment rules before applying them."],
       };
     }
-    const locations = await listAssignmentLocations(admin);
     const evaluation = evaluateAssignmentRules(savedRules, locations);
     if (!evaluation.ok) {
       return {
@@ -307,19 +310,22 @@ export const action = async ({
       };
     }
     const toAdd = locations
-      .filter(
-        (location) =>
-          evaluation.decisions.get(location.locationId)?.assigned &&
-          !location.currentCatalogIds.includes(catalog.shopifyCatalogId),
+      .filter((location) =>
+        isUnassignedMatch(
+          location,
+          evaluation.decisions.get(location.locationId),
+          catalog.shopifyCatalogId,
+        ),
       )
       .map((location) => location.locationId);
     const result = await applyAssignments(admin, catalog.shopifyCatalogId, toAdd);
-    return {
-      intent: "assignment-apply",
-      ok: true,
-      added: result.added.length,
-      error: result.error,
-    };
+    // A Shopify userError means nothing was applied, so this is a failure,
+    // not a success with a side note (the UI only shows the critical "Not
+    // applied" banner when ok is false).
+    if (result.error) {
+      return { intent: "assignment-apply", ok: false, errors: [result.error] };
+    }
+    return { intent: "assignment-apply", ok: true, added: result.added.length };
   }
 
   const rules = sanitiseRules(body.rules);
@@ -940,7 +946,7 @@ export default function RuleBuilderPage() {
               {assignmentApplyFetcher.data?.intent === "assignment-apply" &&
                 assignmentApplyFetcher.data.ok && (
                   <s-banner
-                    tone={assignmentApplyFetcher.data.error ? "warning" : "success"}
+                    tone="success"
                     heading={
                       assignmentApplyFetcher.data.added === 0
                         ? "No locations to add"
@@ -948,11 +954,7 @@ export default function RuleBuilderPage() {
                             assignmentApplyFetcher.data.added === 1 ? "" : "s"
                           }`
                     }
-                  >
-                    {assignmentApplyFetcher.data.error && (
-                      <s-paragraph>{assignmentApplyFetcher.data.error}</s-paragraph>
-                    )}
-                  </s-banner>
+                  />
                 )}
               <s-stack direction="inline" gap="base">
                 <s-button

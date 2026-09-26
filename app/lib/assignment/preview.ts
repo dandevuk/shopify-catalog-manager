@@ -39,6 +39,23 @@ export interface AssignmentPreviewInput {
   rowLimit?: number;
 }
 
+/**
+ * Whether the rules match this location and it doesn't already have this
+ * catalog's context, i.e. what an apply would add. Shared with the
+ * assignment-apply action so the preview and what's actually written to
+ * Shopify can never diverge.
+ */
+export function isUnassignedMatch(
+  location: Pick<AssignmentLocation, "currentCatalogIds">,
+  decision: AssignmentDecision | undefined,
+  shopifyCatalogId: string,
+): boolean {
+  return (
+    (decision?.assigned ?? false) &&
+    !location.currentCatalogIds.includes(shopifyCatalogId)
+  );
+}
+
 export function buildAssignmentPreview({
   locations,
   shopifyCatalogId,
@@ -66,10 +83,10 @@ export function buildAssignmentPreview({
 
     if (!decision?.assigned) {
       notMatchedRows.push(row);
-    } else if (location.currentCatalogIds.includes(shopifyCatalogId)) {
-      alreadyAssignedRows.push(row);
-    } else {
+    } else if (isUnassignedMatch(location, decision, shopifyCatalogId)) {
       addRows.push(row);
+    } else {
+      alreadyAssignedRows.push(row);
     }
   }
 
