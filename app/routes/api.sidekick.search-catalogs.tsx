@@ -16,9 +16,13 @@ import { adminCatalogUrl } from "../lib/sidekick/admin-url";
  * routes OPTIONS to a route's `loader`, never its `action`; without a loader
  * here, the preflight 400s before the real POST is ever sent, and to
  * Sidekick that looks like it can't reach the app at all. authenticate.admin
- * already replies to an OPTIONS request itself (respondToOptionsRequest), so
- * the loader just needs to call it; `cors` adds the required
- * Access-Control-Allow-* headers to the action's actual JSON response.
+ * itself throws the OPTIONS response (respondToOptionsRequest, with the
+ * required Access-Control-Allow-* headers already attached) before it ever
+ * returns, so for a genuine preflight this loader's own body never runs; it
+ * only exists so a preflight has a loader to be routed to at all. The
+ * `return cors(...)` below is a harmless fallback for the (untaken in
+ * practice) case of a real, authenticated non-OPTIONS request reaching this
+ * loader.
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { cors } = await authenticate.admin(request);
@@ -27,22 +31,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, cors } = await authenticate.admin(request);
-  const shop = await ensureShop(session.shop);
-  const body = (await request.json()) as {
-    query?: string;
-    catalogType?: "MARKET" | "COMPANY_LOCATION";
-  };
+  // Everything after this point must go through `cors`, including errors:
+  // an uncors'd response to this cross-origin caller is indistinguishable
+  // from an unreachable app (the same failure mode the loader above exists
+  // to avoid for the OPTIONS preflight).
+  try {
+    const shop = await ensureShop(session.shop);
+    const body = (await request.json()) as {
+      query?: string;
+      catalogType?: "MARKET" | "COMPANY_LOCATION";
+    };
 
-  const catalogs = await loadSearchableCatalogs(shop.id);
-  const results = searchCatalogs(catalogs, body.query ?? "", body.catalogType).map(
-    (result) => ({
-      id: result.id,
-      type: result.type,
-      title: result.title,
-      description: result.reasons.join("; ") || "Matched this search",
-      url: adminCatalogUrl(session.shop, result.urlParam),
-    }),
-  );
+    const catalogs = await loadSearchableCatalogs(shop.id);
+    const results = searchCatalogs(catalogs, body.query ?? "", body.catalogType).map(
+      (result) => ({
+        id: result.id,
+        type: result.type,
+        title: result.title,
+        description: result.reasons.join("; ") || "Matched this search",
+        url: adminCatalogUrl(session.shop, result.urlParam),
+      }),
+    );
 
-  return cors(Response.json({ results }));
+    return cors(Response.json({ results }));
+  } catch (error) {
+    console.error("search_catalogs failed", error);
+    return cors(Response.json({ results: [] }, { status: 500 }));
+  }
 };

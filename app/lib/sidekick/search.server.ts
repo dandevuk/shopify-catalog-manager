@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import prisma from "../../db.server";
 import { normalise } from "../rules/conditions";
 import type { SearchableCatalog } from "./search";
@@ -15,9 +16,7 @@ const CATALOG_WITH_RULES = {
   },
 } as const;
 
-type CatalogWithRules = Awaited<
-  ReturnType<typeof prisma.catalog.findMany<{ where: { shopId: string }; include: typeof CATALOG_WITH_RULES }>>
->[number];
+type CatalogWithRules = Prisma.CatalogGetPayload<{ include: typeof CATALOG_WITH_RULES }>;
 
 function toSearchable(catalog: CatalogWithRules): SearchableCatalog {
   const catalogRuleSet = catalog.ruleSets.find((rs) => rs.kind === "CATALOG");
