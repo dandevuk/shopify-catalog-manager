@@ -586,6 +586,15 @@ shows "Sync Test"/"Sync Test 2") than `CompanyLocation.catalogs` returns over th
 field is scoped to actual `CompanyLocationCatalog` contexts (confirmed via
 `listAssignmentLocations`), which is what `app/lib/assignment` needs and already uses.
 
+## App Store listing
+
+Draft listing copy (introduction, description, features, subtitle), the icon
+generation prompt, and a privacy policy draft live in `app-store-listing.md` at the
+repo root, along with the checklist of what's still needed (icon, screenshots, demo
+video, emergency contact, etc.) before submission. Decided (Sep 2026): submit
+free-only first (see "Pricing and billing" above), app card subtitle is "Rule-based
+catalogs that stay in sync".
+
 ## Commands
 
 - `npm run db:up` / `npm run db:down`: start/stop Postgres and Redis (Docker).
