@@ -2,12 +2,11 @@
 
 client_id = "f28912af1b6a71b6390200d76a0216ef"
 name = "Smart Catalogs Dev"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://web-production-8251a.up.railway.app"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
@@ -58,7 +57,11 @@ api_version = "2026-07"
 scopes = "read_products,read_publications,write_publications,read_markets,read_companies,write_products"
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+redirect_urls = [
+  "https://web-production-8251a.up.railway.app/auth/callback",
+  "https://web-production-8251a.up.railway.app/auth/shopify/callback",
+  "https://web-production-8251a.up.railway.app/api/auth/callback"
+]
 
 [sidekick]
 # Required once the app has any Sidekick-eligible extension (extensions/catalog-tools).
