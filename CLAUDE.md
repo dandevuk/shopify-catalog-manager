@@ -370,38 +370,60 @@ Phase 2 is now complete.
 
 ## Planned features (not yet scheduled)
 
-**Sidekick integration** (idea from Dan, Sep 2026). **Decided: a requirement**, not
-optional. Goal: a merchant can type a prompt like "make a catalog for VIP users, company
-or location metafield of custom_user_type = vip and products tagged vip" into Sidekick
-and get a catalog built from that. Checked against the Sidekick app extensions docs
-(shopify.dev, Sep 2026; the feature itself shipped December 2025):
+**Sidekick integration** (idea from Dan, Sep 2026, rescoped Sep 2026 after checking the
+current Sidekick app extensions docs in detail). Original goal: a merchant types a
+prompt like "make a catalog for VIP users, company or location metafield of
+custom_user_type = vip and products tagged vip" into Sidekick and gets a catalog built
+from that. **That exact vision isn't buildable cleanly today**, so the plan below is a
+scaled-down v0 Dan chose after seeing the platform gap, not the original ask.
 
-- Sidekick app extensions have two layers. Fixed resource "intent types"
-  (`application/email`, `ad`, `campaign`, `faq`, `loyalty-program`, `quote`, `return`,
-  `review`, `shipment`, `ticket`, plus `shopify/*` resource imports) don't cover
-  catalogs or collection rules, so that layer doesn't fit. Each extension can also
-  register up to 20 free-form **tools** (`tools.json`: name, description, JSON-schema
-  `inputSchema`, ordinary LLM function-calling) that Sidekick's model fills in from the
-  merchant's prompt itself. That's the fit: a `create_managed_catalog` tool whose
-  `inputSchema` mirrors the app's rule model (catalog name/type, include/exclude
-  conditions: field, operator, value) lets Sidekick parse the prompt straight into
-  structured conditions without the app doing any NLP.
-- Needs a new `admin_link` or `admin_action` extension (`admin.app.intent.link` or
-  `.render`) with `tools.json` and an `instructions.md` telling Sidekick when to reach
-  for it, plus `[sidekick] extensions_summary` in `shopify.app.toml`.
-- A new route receives the structured data (query params or hash, per the intent
-  schema's `mapTo`/`fieldName`) and turns it into `Include`/`Exclude` condition rows,
-  landing the merchant on the rule builder **pre-filled but not applied**: keep the same
-  "merchant confirms before anything touches Shopify" pattern managed mode already uses,
-  rather than Sidekick creating and syncing a catalog unsupervised.
-- Requires Shopify CLI 3.90+, API version 2026-04+ for the inline `.render` target
-  (2026-07 already in use here), and a CORS allowlist update for the Sidekick sandbox.
-- App Store review requires the extension's declared scope, `tools.json` descriptions
-  and runtime behaviour to stay materially consistent (guideline 2.2.8): the tool must
-  stay narrowly "catalog and rule creation", not a general-purpose action.
-- Schedule after the Phase 1 QC pass; scope the exact tool schema and the prompt-to-rule
-  mapping (including which condition fields/operators a v1 tool should expose) as a
-  dedicated step before building.
+Why the original "create from a prompt" vision doesn't fit: Sidekick can only invoke an
+app extension via a registered **intent**, and every intent must declare a `type` from a
+fixed, Shopify-maintained list (`application/ad`, `campaign`, `email`, `faq`,
+`loyalty-program`, `quote`, `return`, `review`, `shipment`, `ticket`, or
+`shopify/customer|order|product` for import-only). None fit "create a catalog from
+include/exclude rules", and each type's `inputSchema` must `$ref` that type's own
+Shopify-hosted schema, so it's not just a naming mismatch: the payload shape itself is
+bound to the type. Forcing an unrelated type is explicitly discouraged ("Sidekick won't
+reliably invoke your extension"). The only sanctioned route to a fitting type is
+proposing one in Shopify's public app intent types repository, an external process with
+no controllable timeline. Given a choice between waiting on that, forcing a bad type
+match, or shipping a smaller thing that works today, Dan chose the last.
+
+**v0 scope (read-only, no new intent needed)**: an `admin.app.tools.data` ("App tools")
+extension, which lets Sidekick call read/search tools with no intent-type registration
+at all. It can't get the polished "click to open" resource-link handoff (that handoff
+specifically depends on a `resource_link`'s `mimeType` matching a registered intent
+type, which we don't have), but a tool can return a plain description containing a
+literal admin URL, which Sidekick's chat surface should still render as a clickable
+link.
+
+- Extension at `extensions/catalog-tools/` (CLI: `shopify app generate extension
+  --template app_data`), target `admin.app.tools.data`. No API version bump needed:
+  `2026-07` (already in use) supports this target.
+- Two tools in `tools.json`:
+  - `search_catalogs({ query, catalogType? })`: case-insensitive match against catalog
+    titles and condition values/metafield keys across a catalog's `CATALOG` rule set
+    (product membership) and, for `COMPANY_LOCATION` catalogs, its `ASSIGNMENT` rule set
+    too. Returns top matches with a plain-English reason built from the condition data,
+    plus an admin URL to that catalog's rule builder.
+  - `describe_catalog_rules({ catalogTitle })`: explains what a named catalog's saved
+    rules currently do.
+- `instructions.md` must tell Sidekick these tools are read-only/informational: never
+  imply anything was created or changed in Shopify.
+- Two new authenticated routes (e.g. `api.sidekick.search-catalogs.tsx`,
+  `api.sidekick.describe-catalog.tsx`) using the existing `authenticate.admin` pattern.
+  An admin extension's backend calls carry the same ID-token auth as any other embedded
+  admin request, so **no CORS allowlist change is needed** (the earlier plan assumed
+  otherwise; that was wrong). **No new Admin API scopes either**: everything the tools
+  read (`Catalog`, `RuleSet`, `Condition`) is already in the app's own Postgres tables,
+  no live Shopify GraphQL calls needed for the search itself.
+- Add the required `[sidekick] extensions_summary` to `shopify.app.toml`.
+- Open implementation detail: the clickable admin URL needs the app's handle (differs
+  dev vs production) and the store handle derived from the shop domain; a small config
+  item, not a blocker.
+- Once this ships and is tested, revisit the original create-from-prompt vision only if
+  Shopify adds a fitting intent type (or `app_data` tools gain write support).
 
 ## Dev store
 
