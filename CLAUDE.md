@@ -496,52 +496,62 @@ references anywhere). Researched ahead of the first App Store submission.
   submission does, since Shopify's review explicitly tests plan gating (upgrade flow,
   "subscription status checks and access to the correct plan features").
 
-## Hosting (planned, not yet built)
+## Hosting
 
-Not deployed anywhere yet; `docker-compose.yml`'s Postgres/Redis are local dev-only.
-Needs, for production: a real hosted Postgres, a real hosted Redis (the worker's BullMQ
-queues need it as much as the web process does), and **two** long-running processes
-(`npm start` and `npm run worker` separately, per the queue architecture in Phase 1 step
-5 above), plus `prisma migrate deploy` run against the real database (already scripted:
-`Dockerfile`'s `docker-start` runs `npm run setup` first) and `shopify.app.toml`'s
-`application_url`/`redirect_urls` updated from the dev placeholders before `shopify app
-deploy`.
+**Railway project "smart-catalogs" is live (Sep 2026)**, on the 30-day/$5 trial (needs
+Hobby or Pro before that runs out). Four services: `web` and `worker` (both from
+`dandevuk/shopify-catalog-manager` via the existing `Dockerfile`), plus managed
+`Postgres` and `Redis`. Confirmed pricing (railway.com/pricing): $20/month Pro plan
+(includes $20 of usage credit), metered beyond that at roughly $20/vCPU-month,
+$10/GB RAM-month, $0.15/GB disk-month, $0.05/GB egress; Postgres/Redis have no separate
+pricing tier, they're billed as regular services on the same rates.
 
-**Chosen: Railway.** Runs both processes (from the existing `Dockerfile`) plus managed
-Postgres and Redis in one project, rather than assembling separate vendors. Confirmed
-pricing (Sep 2026, from railway.com/pricing): $20/month Pro plan (includes $20 of usage
-credit), metered beyond that per second at roughly $20/vCPU-month, $10/GB RAM-month,
-$0.15/GB disk-month, $0.05/GB egress; no separate Postgres/Redis pricing tier, they're
-billed as regular services on the same rates. Not yet set up: the two Railway services
-(web, worker) and the Postgres/Redis add-ons, and the production env vars each needs
-(`DATABASE_URL`, `REDIS_URL`, `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`,
-`SHOPIFY_APP_URL`, `SCOPES`, `SHOPIFY_APP_HANDLE`).
+`web` env vars: `DATABASE_URL` and `REDIS_URL` as reference variables
+(`${{Postgres.DATABASE_URL}}`, `${{Redis.REDIS_URL}}`), plus `SHOPIFY_API_KEY`,
+`SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL` (the generated Railway domain),
+`SHOPIFY_APP_HANDLE`, `SCOPES`. `worker` needs the same minus `SHOPIFY_APP_HANDLE`/
+`SCOPES` (unused there). Currently reusing the dev app's own client ID/secret to prove
+the deploy works end to end; a real production app record and its own credentials are a
+separate step before App Store submission.
 
-**Verified locally (Sep 2026, `docker build` against the real Dockerfile, run against the
-dev store's local Postgres/Redis via `host.docker.internal`)**:
+Two real bugs found and fixed while setting this up, both worth knowing before touching
+Railway (or any similar host) again:
 
-- **Found and fixed a real secret leak**: `.dockerignore` didn't exclude `.env`, so
+- **A real secret leak in the Docker build**: `.dockerignore` didn't exclude `.env`, so
   `COPY . .` baked the real `SHOPIFY_API_KEY`/`SHOPIFY_API_SECRET` straight into the
   image layers. Fixed by adding `.env`, `.env.*` (keeping `!.env.example`), `.git` and
   `.shopify` to `.dockerignore`. Confirmed after the fix: `/app/.env` doesn't exist in
-  the built image. This must ship before any image is ever built for a real deploy,
-  since Railway (like any registry-based host) would otherwise persist that secret in
-  build layers.
-- The **web service** needs no changes: the existing `CMD ["npm", "run",
-  "docker-start"]` (`prisma generate && prisma migrate deploy`, then
-  `react-router-serve`) works as-is. Confirmed: migrations apply against a real
-  Postgres, the server boots, and it serves a real `HTTP 200`.
-- The **worker service** needs a start-command override on Railway (its own Dockerfile
-  `CMD` only runs the web process): `npm run setup && npx tsx app/worker.ts`. Note this
-  drops `--env-file=.env` (Railway injects env vars directly, and there's no `.env` file
-  in the image or in production) and `--watch` (a dev-only convenience; a production
-  worker doesn't need to hot-reload on file changes). `tsx` itself works fine at runtime
-  in the production image (it's a devDependency, but survives `npm ci --omit=dev` here
-  since something in the production dependency tree already pulls it in transitively;
-  confirmed by running it directly). Confirmed: `prisma generate`/`migrate deploy` run
-  cleanly a second time (Prisma's migrate is safe to run from both services on boot;
-  "No pending migrations to apply" the second time), then the worker logs "Smart
-  Catalogs worker ready: watching...".
+  the built image. This would have shipped the real secret to Railway's build layers on
+  the very first deploy had it not been caught first.
+- **Railway's Custom Start Command is not run through a shell**: setting it to
+  `npm run setup && npx tsx app/worker.ts` deployed "successfully" every time (status
+  `COMPLETED`, no error anywhere) but the worker was never actually running (`No running
+  instances` in the Console tab) — `&&` and everything after it were passed as literal
+  extra arguments to `npm run setup` (which silently accepted and ignored them), so the
+  `npx tsx app/worker.ts` half never ran at all. No error, no crash, nothing in the
+  logs to point at it: `npm run setup`'s own output (migrations etc.) looked completely
+  normal and the deploy still reported success, because from Railway's point of view a
+  process that runs and exits 0 *is* a successful deployment for a service with no
+  exposed port to health-check against. The fix is to wrap the whole thing in an
+  explicit shell: `sh -c "npm run setup && npx tsx app/worker.ts"`. Confirmed via the
+  Console tab's `ps aux`: PID 1 is genuinely `npm exec tsx app/worker.ts`, staying
+  resident. Diagnosed by temporarily appending `; sleep 3600` to keep the container
+  alive long enough to inspect — a generally useful trick for debugging a "deploys fine
+  but nothing's actually running" mystery on any host.
+- Separately, the **web service's exposed port** needed correcting too: the Dockerfile
+  `EXPOSE`s 3000, but `react-router-serve` actually binds to Railway's own auto-injected
+  `PORT` env var (8080) when it's set, overriding that. The public domain's target port
+  had to be set to 8080, not 3000, to stop a `502` on every request; confirmed via the
+  deploy logs' own `[react-router-serve] http://localhost:8080` line.
+- The web service's Dockerfile `CMD` (`prisma generate && prisma migrate deploy`, then
+  `react-router-serve`) otherwise needed no changes, and running `prisma
+  generate`/`migrate deploy` a second time from the worker's own start command is safe
+  (Prisma's migrate is fine to run from two services on boot; the second run just logs
+  "No pending migrations to apply").
+- Not yet done: a production Shopify app record (currently reusing the dev app's
+  credentials), a custom domain, moving off the trial to a paid plan, and pointing
+  `shopify.app.toml`'s `application_url`/`redirect_urls` at the real production values
+  before `shopify app deploy`.
 
 ## Dev store
 
