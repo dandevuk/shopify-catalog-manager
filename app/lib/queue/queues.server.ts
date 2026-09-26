@@ -4,17 +4,22 @@ import { RECHECK_DELAYS_MS } from "../product-index/index.server";
 import { redisConnection } from "./connection.server";
 
 /**
- * The app's two BullMQ queues (Phase 1, step 5). Jobs only carry IDs; the
- * worker (`app/worker.ts`) re-reads everything it needs when it runs a job,
- * so a job is safe to run late or (for the recheck queue) skip if it's been
- * superseded.
+ * The app's BullMQ queues. Jobs only carry IDs; the worker (`app/worker.ts`)
+ * re-reads everything it needs when it runs a job, so a job is safe to run
+ * late or (for the recheck queue) skip if it's been superseded.
  *
  *   product-index-recheck  the 30 s / 2 min / 10 min re-reads that catch
  *                          collection-condition membership Shopify applies
- *                          after a save (findings 15 to 17)
+ *                          after a save (findings 15 to 17). Phase 1, step 5.
  *   catalog-sync           an automatic run of managed mode for one catalog,
  *                          debounced so a burst of product changes collapses
- *                          into one sync per catalog
+ *                          into one sync per catalog. Phase 1, step 5.
+ *   assignment-scan        a repeating scan (Phase 2, step 5) that re-applies
+ *                          every catalog's saved B2B assignment rules: there's
+ *                          no webhook to react to (company_locations/* is
+ *                          deliberately unused, protected customer data), so
+ *                          this is the only way a newly matching location
+ *                          gets picked up automatically.
  *
  * Queues (and Workers) each get their own Redis connection; see
  * connection.server.ts.
@@ -22,6 +27,7 @@ import { redisConnection } from "./connection.server";
 
 export const RECHECK_QUEUE_NAME = "product-index-recheck";
 export const CATALOG_SYNC_QUEUE_NAME = "catalog-sync";
+export const ASSIGNMENT_SCAN_QUEUE_NAME = "assignment-scan";
 
 export interface ProductRecheckJob {
   shopDomain: string;
@@ -44,6 +50,7 @@ export interface CatalogSyncJob {
 // Workers do, so sharing them across requests is fine.
 let recheckQueue: Queue<ProductRecheckJob | CollectionRecheckJob> | undefined;
 let catalogSyncQueue: Queue<CatalogSyncJob> | undefined;
+let assignmentScanQueue: Queue | undefined;
 
 function getRecheckQueue() {
   recheckQueue ??= new Queue(RECHECK_QUEUE_NAME, { connection: redisConnection() });
@@ -53,6 +60,13 @@ function getRecheckQueue() {
 function getCatalogSyncQueue() {
   catalogSyncQueue ??= new Queue(CATALOG_SYNC_QUEUE_NAME, { connection: redisConnection() });
   return catalogSyncQueue;
+}
+
+function getAssignmentScanQueue() {
+  assignmentScanQueue ??= new Queue(ASSIGNMENT_SCAN_QUEUE_NAME, {
+    connection: redisConnection(),
+  });
+  return assignmentScanQueue;
 }
 
 /**
@@ -157,4 +171,30 @@ export async function scheduleManagedCatalogSyncs(shopDomain: string): Promise<v
     select: { id: true },
   });
   for (const catalog of catalogs) scheduleCatalogSync(shopDomain, catalog.id);
+}
+
+/**
+ * How often the automatic assignment scan runs (Phase 2, step 5). Coarse for
+ * v1: not tied to any event, so this is a flat interval rather than a
+ * per-catalog debounce.
+ */
+export const ASSIGNMENT_SCAN_INTERVAL_MS = 15 * 60_000;
+
+/**
+ * Schedules the repeating assignment scan job. Safe to call on every worker
+ * startup: `upsertJobScheduler` replaces any existing scheduler under the
+ * same id rather than adding a duplicate.
+ */
+export async function scheduleAssignmentScan(): Promise<void> {
+  await getAssignmentScanQueue().upsertJobScheduler(
+    "assignment-scan",
+    { every: ASSIGNMENT_SCAN_INTERVAL_MS },
+    {
+      name: "scan",
+      opts: {
+        removeOnComplete: { age: 60 * 60 },
+        removeOnFail: { age: 7 * 24 * 60 * 60 },
+      },
+    },
+  );
 }

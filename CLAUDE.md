@@ -328,8 +328,21 @@ Steps:
    personal dev store the new scope was **auto-granted** on the next `npm run dev`
    restart, with no manual re-consent click needed (confirmed Sep 2026). A real
    merchant install would still need to reopen the app to approve it.
-5. Automatic re-scan (later step, same shape as the job queue): a scheduled scan, no
-   `company_locations/*` webhooks.
+5. ~~Automatic re-scan~~: done and tested end to end on the dev store (Sep 2026). A new
+   `assignment-scan` BullMQ queue (`app/lib/queue/queues.server.ts`), with a single
+   repeating job (BullMQ's `upsertJobScheduler`, not a delayed `add`: v6 moved repeatable
+   jobs to their own API) every 15 minutes, coarse for v1 since there's no event to key
+   off. `app/lib/assignment/auto-scan.server.ts`'s `runAssignmentAutoScan` finds every
+   catalog with a saved `ASSIGNMENT` rule set across every shop, re-evaluates each one
+   against a fresh location read and applies any newly matching, not-yet-assigned
+   locations, reusing `isUnassignedMatch` and `applyAssignments` from steps 3 and 4 so
+   the automatic path can't diverge from the manual one. Registered and scheduled by
+   `app/worker.ts` on startup (`upsertJobScheduler` is idempotent, so restarting the
+   worker doesn't duplicate the schedule). Verified by temporarily pointing a saved rule
+   at Snowdevil and calling `runAssignmentAutoScan()` directly: it found the new match
+   and added it via a real `catalogContextUpdate`, then the fixtures were restored.
+
+Phase 2 is now complete.
 
 ## Planned features (not yet scheduled)
 
