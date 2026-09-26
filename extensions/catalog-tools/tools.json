@@ -1,0 +1,107 @@
+[
+  {
+    "$schema": "https://extensions.shopifycdn.com/shopifycloud/schemas/v1/tool.json",
+    "name": "search_catalogs",
+    "description": "Find the merchant's Market or B2B catalogs whose saved Smart Catalogs rules would likely match a described group of products or customers, e.g. 'VIP customers', 'wholesale companies', 'snowboards'. Searches catalog names and saved rule conditions: product tags, vendor, product type, title, category, collection, product metafield values, and for B2B catalogs the company and location metafields that control catalog assignment. Read-only: doesn't create, change, or apply anything.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Words describing the products or customers the merchant is asking about, e.g. \"vip\", \"wholesale\", \"snowboards\""
+        },
+        "catalogType": {
+          "type": "string",
+          "description": "Restrict to Market catalogs or B2B (company location) catalogs",
+          "enum": ["MARKET", "COMPANY_LOCATION"]
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "description": "Catalogs whose rules matched, best match first",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The catalog's Shopify GID"
+              },
+              "type": {
+                "type": "string",
+                "description": "MARKET or COMPANY_LOCATION"
+              },
+              "title": {
+                "type": "string",
+                "description": "The catalog's title in Shopify"
+              },
+              "description": {
+                "type": "string",
+                "description": "Plain-English reason this catalog matched"
+              },
+              "url": {
+                "type": "string",
+                "nullable": true,
+                "description": "Admin URL to the catalog's rule builder in Smart Catalogs, if available"
+              }
+            },
+            "required": ["id", "type", "title", "description"]
+          }
+        }
+      }
+    }
+  },
+  {
+    "$schema": "https://extensions.shopifycdn.com/shopifycloud/schemas/v1/tool.json",
+    "name": "describe_catalog_rules",
+    "description": "Explain in plain language what a specific catalog's saved Smart Catalogs rules currently do, given the catalog's title as it appears in Shopify. Read-only: doesn't create, change, or apply anything.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "catalogTitle": {
+          "type": "string",
+          "description": "The catalog's title, as it appears in the Shopify admin"
+        }
+      },
+      "required": ["catalogTitle"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "found": {
+          "type": "boolean",
+          "description": "False when no catalog matched the given title"
+        },
+        "title": { "type": "string" },
+        "type": {
+          "type": "string",
+          "description": "MARKET or COMPANY_LOCATION"
+        },
+        "url": {
+          "type": "string",
+          "nullable": true,
+          "description": "Admin URL to the catalog's rule builder in Smart Catalogs, if available"
+        },
+        "includeRules": {
+          "type": "string",
+          "nullable": true,
+          "description": "Plain-English description of the catalog's include conditions"
+        },
+        "excludeRules": {
+          "type": "string",
+          "nullable": true,
+          "description": "Plain-English description of the catalog's exclude conditions"
+        },
+        "assignmentRules": {
+          "type": "string",
+          "nullable": true,
+          "description": "Plain-English description of which B2B company locations are assigned this catalog (COMPANY_LOCATION catalogs only)"
+        }
+      },
+      "required": ["found"]
+    }
+  }
+]

@@ -1,0 +1,15 @@
+api_version = "2026-07"
+
+[[extensions]]
+# Change the merchant-facing name of the extension in locales/en.default.json
+name = "t:name"
+handle = "catalog-tools"
+type = "ui_extension"
+uid = "b58d2e98-1735-6bdb-20ad-ebefa4449f332b3dffe8"
+description = "t:description"
+
+[[extensions.targeting]]
+module = "./src/index.js"
+target = "admin.app.tools.data"
+tools = "./tools.json"
+instructions = "./instructions.md"
