@@ -115,25 +115,20 @@ async function loadContext(request: Request, param: string | undefined) {
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, shop, catalog } = await loadContext(request, params.catalogId);
   const isB2B = catalog.type === "COMPANY_LOCATION";
-  // Read first: the category names fetch below depends on which categories
-  // the saved rules already use.
-  const rules = await loadRules(catalog.recordId);
+  const [rules, collections, metafieldDefinitions, assignmentRules, assignmentMetafieldDefinitions] =
+    await Promise.all([
+      loadRules(catalog.recordId),
+      listCollections(admin),
+      listRuleMetafields(admin, shop.id),
+      isB2B ? loadAssignmentRules(catalog.recordId) : null,
+      isB2B ? listAssignmentMetafieldDefinitions(admin) : [],
+    ]);
+  // Depends on which categories the saved rules use, so this can only start
+  // once `rules` is in.
   const savedCategoryIds = (rules?.conditions ?? []).flatMap((c) =>
     c.field === "category" && c.value ? [c.value] : [],
   );
-  const [
-    collections,
-    metafieldDefinitions,
-    assignmentRules,
-    assignmentMetafieldDefinitions,
-    categoryNames,
-  ] = await Promise.all([
-    listCollections(admin),
-    listRuleMetafields(admin, shop.id),
-    isB2B ? loadAssignmentRules(catalog.recordId) : null,
-    isB2B ? listAssignmentMetafieldDefinitions(admin) : [],
-    getCategoryNames(admin, savedCategoryIds),
-  ]);
+  const categoryNames = await getCategoryNames(admin, savedCategoryIds);
 
   return {
     catalog: {
@@ -1688,7 +1683,7 @@ function CategoryValue({
   const [query, setQuery] = useState("");
   const searchFetcher = useFetcher<typeof action>();
   const results =
-    searchFetcher.data?.intent === "search-categories"
+    query.trim() && searchFetcher.data?.intent === "search-categories"
       ? searchFetcher.data.categories
       : [];
 
