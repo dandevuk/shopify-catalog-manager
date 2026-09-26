@@ -450,6 +450,73 @@ link.
 - Once this ships and is tested, revisit the original create-from-prompt vision only if
   Shopify adds a fitting intent type (or `app_data` tools gain write support).
 
+## Pricing and billing (planned, not yet built)
+
+No billing code exists in the app yet (confirmed Sep 2026: no `billing`/`Billing`
+references anywhere). Researched ahead of the first App Store submission.
+
+- **Use Shopify App Pricing**, not the Billing API: it's the default/recommended path for
+  new public apps, configured in the Partner Dashboard (not in code), and Shopify hosts
+  the plan page and handles trials, proration, upgrades and downgrades. The app only
+  needs to check `activeSubscription` (Partner API) and gate access accordingly.
+- **Flat tiered recurring plans**, not usage-based: this app's costs don't map to a
+  natural per-unit merchant charge (unlike SMS/email apps), so tiers by feature/scale
+  limit fit better than a usage meter. Draft structure (prices are a starting guess, not
+  final):
+  - **Free**: 1 managed Market catalog, manual sync only (no automatic webhook-triggered
+    re-sync). Capping automatic sync on the free tier is deliberate: it's the main thing
+    that drives worker/queue load, so it keeps free-tier hosting cost bounded.
+  - **Growth (~$19-29/mo)**: unlimited Market catalogs, automatic sync, Sidekick search.
+  - **Plus/B2B (~$49-79/mo)**: everything in Growth, plus B2B catalog assignment rules
+    and the automatic assignment re-scan. This naturally only matters to Plus merchants
+    anyway, since `CompanyLocationCatalog` is Plus-only (finding 11); no separate
+    "price by Shopify plan" mechanism exists in Shopify App Pricing, so a Plus-gated
+    *feature* tier is the way to get that effect.
+  - Apply for Shopify's reduced revenue-share program: 0% on the first $1,000,000 USD
+    lifetime app revenue, 15% after (down from the 20% default).
+- **Dev stores are free automatically**: any Shopify App Pricing plan is $0 on a dev
+  store in your own Partner org, no configuration needed. A dev store in a *different*
+  Partner org (another developer, or a merchant trying it before going live) can only
+  pick free plans by default; mark a specific paid plan "free to test" in the Partner
+  Dashboard to let them try it too.
+- **Rough unit economics** (Railway, Sep 2026 pricing, see the Railway section below for
+  the underlying rates): fixed floor to keep the app running 24/7 (web + worker +
+  Postgres + Redis, near-idle) is roughly $15-25/month. Marginal cost per shop is
+  small and scales with activity (webhook volume, sync frequency, product index size,
+  and for B2B the 15-minute assignment scan): rough order of magnitude $0.10-0.30/month
+  for a quiet shop, up to $2-5/month for a large, active B2B one. At the draft prices
+  above, gross margin (before Dan's own time) is roughly 95%+ per subscriber; the fixed
+  floor is the only real risk while there are few paying merchants, and is covered by a
+  single Growth subscriber. See "Hosting" below for the Railway rates this is based on.
+- **Open decision, not yet made**: whether to submit the first App Store version
+  free-only (simpler v1, add Shopify App Pricing plans and the `activeSubscription` gate
+  in a later update once there's a real install base) or build the plan gating before
+  the first submission (more to build up front, revenue from day one). Submitting
+  without any paid plans needs no billing code at all; declaring paid plans at
+  submission does, since Shopify's review explicitly tests plan gating (upgrade flow,
+  "subscription status checks and access to the correct plan features").
+
+## Hosting (planned, not yet built)
+
+Not deployed anywhere yet; `docker-compose.yml`'s Postgres/Redis are local dev-only.
+Needs, for production: a real hosted Postgres, a real hosted Redis (the worker's BullMQ
+queues need it as much as the web process does), and **two** long-running processes
+(`npm start` and `npm run worker` separately, per the queue architecture in Phase 1 step
+5 above), plus `prisma migrate deploy` run against the real database (already scripted:
+`Dockerfile`'s `docker-start` runs `npm run setup` first) and `shopify.app.toml`'s
+`application_url`/`redirect_urls` updated from the dev placeholders before `shopify app
+deploy`.
+
+**Chosen: Railway.** Runs both processes (from the existing `Dockerfile`) plus managed
+Postgres and Redis in one project, rather than assembling separate vendors. Confirmed
+pricing (Sep 2026, from railway.com/pricing): $20/month Pro plan (includes $20 of usage
+credit), metered beyond that per second at roughly $20/vCPU-month, $10/GB RAM-month,
+$0.15/GB disk-month, $0.05/GB egress; no separate Postgres/Redis pricing tier, they're
+billed as regular services on the same rates. Not yet set up: the two Railway services
+(web, worker) and the Postgres/Redis add-ons, and the production env vars each needs
+(`DATABASE_URL`, `REDIS_URL`, `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`,
+`SHOPIFY_APP_URL`, `SCOPES`, `SHOPIFY_APP_HANDLE`).
+
 ## Dev store
 
 "Catalog Manager Test" (catalog-manager-test.myshopify.com), Shopify Plus App Development
