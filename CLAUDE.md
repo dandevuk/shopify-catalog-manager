@@ -302,8 +302,19 @@ Steps:
    read per company), each location's `company { id name metafields }`, its own
    `metafields`, and its `catalogs { nodes { id } }` for current context (the additive
    diff). Paginated the same way as `listCollections`/`listMetafieldDefinitions`.
-3. Rule builder UI and a preview page (locations, their current contexts, what the rules
-   would assign), reusing the product rule builder's shape where it fits.
+3. ~~Rule builder UI and preview~~: done and tested end to end on the dev store (Sep
+   2026). Added to the existing rule builder page (`app/routes/app.catalogs.$catalogId.tsx`),
+   shown only for `COMPANY_LOCATION` catalogs: an "Assignment conditions" editor (its own
+   ALL/ANY match mode, metafield picker scoped to `company_metafield`/`location_metafield`
+   definitions, reusing the product builder's `MetafieldValue` component) and an
+   "Assignment preview" section (locations sorted into would-be-added, already-assigned
+   and doesn't-match, with a reason per row), following the same 500ms-debounced live
+   preview pattern as product rules. New action intents `assignment-preview` and
+   `assignment-save`, alongside the existing `preview`/`save`. Verified against the dev
+   store fixtures: a `company_metafield` "Customer type is wholesale" condition correctly
+   reported Powderbound as "already assigned" (it already has this catalog's context) and
+   Snowdevil/Alpine VIP Outfitters as not matching; the saved rule persisted across a
+   page reload.
 4. Apply: `catalogContextUpdate`, additive only (per the design decision above). Needs
    the `write_products` scope added and the existing-install re-consent flow.
 5. Automatic re-scan (later step, same shape as the job queue): a scheduled scan, no

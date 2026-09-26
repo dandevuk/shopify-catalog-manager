@@ -1,9 +1,16 @@
-import { pickMetafields } from "../product-index/metafields";
+import {
+  isSupportedMetafieldType,
+  listItems,
+  metafieldKey,
+  pickMetafields,
+  type MetafieldType,
+} from "../product-index/metafields";
 import {
   runGraphql,
   type AdminGraphqlClient,
   type GraphqlResult,
 } from "../shopify/graphql.server";
+import type { AssignmentConditionField } from "./conditions";
 import type { RuleLocation } from "./evaluate";
 
 /**
@@ -106,4 +113,91 @@ export async function listAssignmentLocations(
   }
 
   return locations;
+}
+
+// ---------------------------------------------------------------------------
+// Metafield definitions (for the assignment rule builder)
+// ---------------------------------------------------------------------------
+
+const METAFIELD_DEFINITIONS_QUERY = `#graphql
+  query AssignmentMetafieldDefinitions {
+    company: metafieldDefinitions(ownerType: COMPANY, first: 250) {
+      nodes {
+        namespace
+        key
+        name
+        type { name }
+        validations { name value }
+      }
+    }
+    companyLocation: metafieldDefinitions(ownerType: COMPANY_LOCATION, first: 250) {
+      nodes {
+        namespace
+        key
+        name
+        type { name }
+        validations { name value }
+      }
+    }
+  }
+`;
+
+interface MetafieldDefinitionNode {
+  namespace: string;
+  key: string;
+  name: string;
+  type: { name: string };
+  validations: { name: string; value: string | null }[];
+}
+
+interface MetafieldDefinitionsResult {
+  company: { nodes: MetafieldDefinitionNode[] };
+  companyLocation: { nodes: MetafieldDefinitionNode[] };
+}
+
+export interface AssignmentMetafieldDefinition {
+  field: AssignmentConditionField;
+  /** "namespace.key" */
+  key: string;
+  name: string;
+  type: MetafieldType;
+  /** Allowed values, when the definition limits them (the "choices" validation) */
+  choices: string[] | null;
+}
+
+/**
+ * Company and location metafield definitions with a type rules can test.
+ * Unlike products, a store isn't expected to have hundreds of these, so this
+ * reads one page of each (250) rather than paginating.
+ */
+export async function listAssignmentMetafieldDefinitions(
+  admin: AdminGraphqlClient,
+): Promise<AssignmentMetafieldDefinition[]> {
+  const { data } = await runGraphql<MetafieldDefinitionsResult>(
+    admin,
+    METAFIELD_DEFINITIONS_QUERY,
+  );
+
+  const toDefinitions = (
+    field: AssignmentConditionField,
+    nodes: MetafieldDefinitionNode[],
+  ): AssignmentMetafieldDefinition[] =>
+    nodes.flatMap((node): AssignmentMetafieldDefinition[] => {
+      if (!isSupportedMetafieldType(node.type.name)) return [];
+      const choices = node.validations.find((v) => v.name === "choices")?.value;
+      return [
+        {
+          field,
+          key: metafieldKey(node.namespace, node.key),
+          name: node.name,
+          type: node.type.name,
+          choices: choices ? listItems(choices) : null,
+        },
+      ];
+    });
+
+  return [
+    ...toDefinitions("company_metafield", data.company.nodes),
+    ...toDefinitions("location_metafield", data.companyLocation.nodes),
+  ].sort((a, b) => a.name.localeCompare(b.name));
 }
