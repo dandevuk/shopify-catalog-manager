@@ -488,13 +488,15 @@ references anywhere). Researched ahead of the first App Store submission.
   above, gross margin (before Dan's own time) is roughly 95%+ per subscriber; the fixed
   floor is the only real risk while there are few paying merchants, and is covered by a
   single Growth subscriber. See "Hosting" below for the Railway rates this is based on.
-- **Open decision, not yet made**: whether to submit the first App Store version
-  free-only (simpler v1, add Shopify App Pricing plans and the `activeSubscription` gate
-  in a later update once there's a real install base) or build the plan gating before
-  the first submission (more to build up front, revenue from day one). Submitting
-  without any paid plans needs no billing code at all; declaring paid plans at
-  submission does, since Shopify's review explicitly tests plan gating (upgrade flow,
-  "subscription status checks and access to the correct plan features").
+- **Decided (Sep 2026): submit the first App Store version free-only.** No merchant
+  will pay upfront for an unreviewed app, a free-only submission is a simpler review
+  (no billing flow for Shopify to test), and the unit economics above mean staying free
+  for a while costs very little even with a decent number of installs. Add Shopify App
+  Pricing plans (Growth/Plus, with a free trial on each, e.g. 7 days) and the
+  `activeSubscription` gate in a later update once there's a real install base and
+  reviews; adding pricing later is a normal Shopify App Pricing update, not something
+  the platform restricts to launch time. No billing code needed for the free-only
+  submission itself.
 
 ## Hosting
 
