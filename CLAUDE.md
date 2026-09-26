@@ -498,8 +498,8 @@ references anywhere). Researched ahead of the first App Store submission.
 
 ## Hosting
 
-**Railway project "smart-catalogs" is live (Sep 2026)**, on the 30-day/$5 trial (needs
-Hobby or Pro before that runs out). Four services: `web` and `worker` (both from
+**Railway project "smart-catalogs" is live (Sep 2026)**, on the Hobby plan ($5/month,
+upgraded from the 30-day trial). Four services: `web` and `worker` (both from
 `dandevuk/shopify-catalog-manager` via the existing `Dockerfile`), plus managed
 `Postgres` and `Redis`. Confirmed pricing (railway.com/pricing): $20/month Pro plan
 (includes $20 of usage credit), metered beyond that at roughly $20/vCPU-month,
@@ -548,10 +548,15 @@ Railway (or any similar host) again:
   generate`/`migrate deploy` a second time from the worker's own start command is safe
   (Prisma's migrate is fine to run from two services on boot; the second run just logs
   "No pending migrations to apply").
-- Not yet done: a production Shopify app record (currently reusing the dev app's
-  credentials), a custom domain, moving off the trial to a paid plan, and pointing
-  `shopify.app.toml`'s `application_url`/`redirect_urls` at the real production values
-  before `shopify app deploy`.
+- `shopify.app.toml`'s `application_url`/`redirect_urls` now point at the Railway
+  domain, deployed (`shopify app deploy --allow-updates`) as a released app version;
+  confirmed live by reopening the app fresh in the dev store admin. No separate
+  "production app" record is needed: the same Partner Dashboard app entity (currently
+  still using the dev app's own client ID/secret) just points at the real host instead
+  of the dev tunnel. Moved off the Railway trial to the Hobby plan ($5/month).
+- Not yet done: a custom domain (cosmetic, `up.railway.app` works for launch), and the
+  pricing/billing gate decision (submit free-only first vs. build Shopify App Pricing
+  plan gating now) from the Pricing and billing section above.
 
 ## Dev store
 
