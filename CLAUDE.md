@@ -211,9 +211,11 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    for collection conditions (findings 14 to 17).
 3. ~~Rule evaluator~~: done and tested on the dev store (Sep 2026), with a preview-only
    rule builder (tag, vendor, product type, title, collection, status, Online Store),
-   plus metafield conditions (PR #3). Still open: a category picker (the evaluator
-   already supports category), and possibly the "not visible" warning for Market
-   catalogs (only B2B was checked on the storefront, finding 6).
+   plus metafield conditions (PR #3) and a category picker (search-as-you-type over
+   Shopify's product taxonomy, tested end to end on the dev store Sep 2026: search,
+   selection, persistence with the friendly breadcrumb name, and a working preview).
+   Still open: the "not visible" warning for Market catalogs (only B2B was checked on
+   the storefront, finding 6).
 4. ~~Managed mode~~ (`app/lib/sync/plan.ts`, `apply.server.ts`, `managed.server.ts`): done
    and tested on the dev store (Sep 2026), PR #4. "Apply to Shopify" on the rules page.
    Uses the saved rules; creates the publication if missing, turns autoPublish off,
