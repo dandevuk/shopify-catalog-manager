@@ -315,8 +315,19 @@ Steps:
    reported Powderbound as "already assigned" (it already has this catalog's context) and
    Snowdevil/Alpine VIP Outfitters as not matching; the saved rule persisted across a
    page reload.
-4. Apply: `catalogContextUpdate`, additive only (per the design decision above). Needs
-   the `write_products` scope added and the existing-install re-consent flow.
+4. ~~Apply~~: done and tested end to end on the dev store (Sep 2026), including a real
+   `catalogContextUpdate` write (added Snowdevil to "Spike: Powderbound trade", confirmed
+   via `listAssignmentLocations`, then removed again to restore the fixtures).
+   `app/lib/assignment/apply.server.ts`: one `catalogContextUpdate` call with every
+   matched, not-yet-assigned location's ID, `contextsToAdd` only (never
+   `contextsToRemove`, per the additive-only decision). No chunking: unlike
+   `publicationUpdate` (finding 1), `catalogContextUpdate` has no documented per-call
+   limit, and company location counts are small. The action always re-evaluates the
+   *saved* rules against a fresh location read (never trusts the client's rules or a
+   stale preview) before applying. `write_products` added to `shopify.app.toml`; on this
+   personal dev store the new scope was **auto-granted** on the next `npm run dev`
+   restart, with no manual re-consent click needed (confirmed Sep 2026). A real
+   merchant install would still need to reopen the app to approve it.
 5. Automatic re-scan (later step, same shape as the job queue): a scheduled scan, no
    `company_locations/*` webhooks.
 
