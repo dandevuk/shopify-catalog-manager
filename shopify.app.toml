@@ -59,3 +59,7 @@ scopes = "read_products,read_publications,write_publications,read_markets,read_c
 
 [auth]
 redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+
+[sidekick]
+# Required once the app has any Sidekick-eligible extension (extensions/catalog-tools).
+extensions_summary = "Searches and explains the merchant's saved Smart Catalogs rules for Market and B2B catalogs, to help find or understand which catalog matches a described group of products or customers."
