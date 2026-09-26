@@ -53,6 +53,7 @@ import {
   type AssignmentPreview,
   type AssignmentPreviewRow,
 } from "../lib/assignment/preview";
+import { applyAssignments } from "../lib/assignment/apply.server";
 import {
   loadAssignmentRules,
   saveAssignmentRules,
@@ -170,8 +171,13 @@ type ActionResult =
   | { intent: "sync-start"; ok: false; error: string }
   | { intent: "stop-managing"; ok: true }
   | { intent: "assignment-preview"; ok: true; preview: AssignmentPreview }
-  | { intent: "assignment-preview" | "assignment-save"; ok: false; errors: string[] }
-  | { intent: "assignment-save"; ok: true };
+  | {
+      intent: "assignment-preview" | "assignment-save" | "assignment-apply";
+      ok: false;
+      errors: string[];
+    }
+  | { intent: "assignment-save"; ok: true }
+  | { intent: "assignment-apply"; ok: true; added: number; error: string | null };
 
 export const action = async ({
   request,
@@ -186,7 +192,8 @@ export const action = async ({
       | "sync-start"
       | "stop-managing"
       | "assignment-preview"
-      | "assignment-save";
+      | "assignment-save"
+      | "assignment-apply";
     rules?: SavedRules;
     assignmentRules?: SavedAssignmentRules;
     acknowledgement?: Acknowledgement;
@@ -229,7 +236,9 @@ export const action = async ({
   // Assignment rules only mean anything for a B2B catalog; the page only
   // shows the editor for one, but a posted intent isn't bound by that.
   if (
-    (body.intent === "assignment-preview" || body.intent === "assignment-save") &&
+    (body.intent === "assignment-preview" ||
+      body.intent === "assignment-save" ||
+      body.intent === "assignment-apply") &&
     catalog.type !== "COMPANY_LOCATION"
   ) {
     throw new Response("Assignment rules are only for B2B catalogs", {
@@ -273,6 +282,43 @@ export const action = async ({
         decisions: evaluation.decisions,
         nameFor: (key) => names.get(key),
       }),
+    };
+  }
+
+  if (body.intent === "assignment-apply") {
+    // Always the saved rules, never what the client posts: the button is
+    // disabled while there are unsaved edits, and applying should only ever
+    // do what's actually saved.
+    const savedRules = await loadAssignmentRules(catalog.recordId);
+    if (!savedRules) {
+      return {
+        intent: "assignment-apply",
+        ok: false,
+        errors: ["Save assignment rules before applying them."],
+      };
+    }
+    const locations = await listAssignmentLocations(admin);
+    const evaluation = evaluateAssignmentRules(savedRules, locations);
+    if (!evaluation.ok) {
+      return {
+        intent: "assignment-apply",
+        ok: false,
+        errors: evaluation.errors.map((e) => e.error),
+      };
+    }
+    const toAdd = locations
+      .filter(
+        (location) =>
+          evaluation.decisions.get(location.locationId)?.assigned &&
+          !location.currentCatalogIds.includes(catalog.shopifyCatalogId),
+      )
+      .map((location) => location.locationId);
+    const result = await applyAssignments(admin, catalog.shopifyCatalogId, toAdd);
+    return {
+      intent: "assignment-apply",
+      ok: true,
+      added: result.added.length,
+      error: result.error,
     };
   }
 
@@ -525,6 +571,7 @@ export default function RuleBuilderPage() {
   const saveFetcher = useFetcher<typeof action>();
   const assignmentPreviewFetcher = useFetcher<typeof action>();
   const assignmentSaveFetcher = useFetcher<typeof action>();
+  const assignmentApplyFetcher = useFetcher<typeof action>();
 
   const [state, setState] = useState<EditorState>(() => ({
     includeMatch: rules.includeMatch,
@@ -868,11 +915,62 @@ export default function RuleBuilderPage() {
                   Save assignment rules
                 </s-button>
               </s-stack>
+            </s-stack>
+          </s-section>
+
+          <s-section heading="Apply assignments">
+            <s-stack direction="block" gap="base">
               <s-paragraph>
-                Applying these to Shopify (adding matched locations to the
-                catalog) is a later step; saving only stores the rules in the
-                app.
+                Adds every location the saved rules match to this catalog.
+                Additive only: it never removes a location a merchant assigned
+                by hand or that a previous apply added, even if it no longer
+                matches.
               </s-paragraph>
+              {assignmentDirty && (
+                <s-paragraph>Save your rules before applying them.</s-paragraph>
+              )}
+              {assignmentApplyFetcher.data?.intent === "assignment-apply" &&
+                !assignmentApplyFetcher.data.ok && (
+                  <s-banner tone="critical" heading="Not applied">
+                    <s-paragraph>
+                      {assignmentApplyFetcher.data.errors.join(" ")}
+                    </s-paragraph>
+                  </s-banner>
+                )}
+              {assignmentApplyFetcher.data?.intent === "assignment-apply" &&
+                assignmentApplyFetcher.data.ok && (
+                  <s-banner
+                    tone={assignmentApplyFetcher.data.error ? "warning" : "success"}
+                    heading={
+                      assignmentApplyFetcher.data.added === 0
+                        ? "No locations to add"
+                        : `Added ${assignmentApplyFetcher.data.added} location${
+                            assignmentApplyFetcher.data.added === 1 ? "" : "s"
+                          }`
+                    }
+                  >
+                    {assignmentApplyFetcher.data.error && (
+                      <s-paragraph>{assignmentApplyFetcher.data.error}</s-paragraph>
+                    )}
+                  </s-banner>
+                )}
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  disabled={assignmentDirty || !hasSavedAssignmentRules}
+                  onClick={() =>
+                    assignmentApplyFetcher.submit(
+                      { intent: "assignment-apply" } as never,
+                      { method: "post", encType: "application/json" },
+                    )
+                  }
+                  {...(assignmentApplyFetcher.state !== "idle"
+                    ? { loading: true }
+                    : {})}
+                >
+                  Apply assignments
+                </s-button>
+              </s-stack>
             </s-stack>
           </s-section>
 
