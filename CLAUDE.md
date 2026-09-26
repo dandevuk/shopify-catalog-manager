@@ -370,6 +370,15 @@ Phase 2 is now complete.
 
 ## Planned features (not yet scheduled)
 
+~~**Sidekick integration**~~: done and tested end to end on the dev store (Sep 2026), as
+the rescoped v0 below (PR #10). Verified live via an actual Sidekick conversation:
+asking "Do I have a catalog for wholesale customers?" correctly found "Spike:
+Powderbound trade" with its real saved rule ("custom.customer_type is wholesale"),
+rendered as a clickable link, which navigated to the right catalog's rule builder. No
+other feature is currently queued; this section is kept for the platform-gap writeup
+and to revisit the original create-from-prompt vision if Shopify ever adds a fitting
+intent type (see the last bullet below).
+
 **Sidekick integration** (idea from Dan, Sep 2026, rescoped Sep 2026 after checking the
 current Sidekick app extensions docs in detail). Original goal: a merchant types a
 prompt like "make a catalog for VIP users, company or location metafield of
