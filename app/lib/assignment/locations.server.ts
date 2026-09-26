@@ -29,14 +29,21 @@ const LOCATIONS_QUERY = `#graphql
         company {
           id
           name
-          metafields(first: 50) {
+          # One page, not paginated: a company/location isn't expected to
+          # carry hundreds of metafields (same assumption as the assignment
+          # metafield definitions query).
+          metafields(first: 250) {
             nodes { namespace key type value }
           }
         }
-        metafields(first: 50) {
+        metafields(first: 250) {
           nodes { namespace key type value }
         }
-        catalogs(first: 10) {
+        # One page, not paginated: a location isn't expected to have its own
+        # context on dozens of catalogs. If it ever does, only the first 50
+        # are seen here, which could miss the target catalog and misreport an
+        # already-assigned location as "would be added".
+        catalogs(first: 50) {
           nodes { id }
         }
       }

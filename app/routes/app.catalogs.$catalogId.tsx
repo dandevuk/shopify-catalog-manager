@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -226,6 +226,17 @@ export const action = async ({
     return { intent: "stop-managing", ok: true };
   }
 
+  // Assignment rules only mean anything for a B2B catalog; the page only
+  // shows the editor for one, but a posted intent isn't bound by that.
+  if (
+    (body.intent === "assignment-preview" || body.intent === "assignment-save") &&
+    catalog.type !== "COMPANY_LOCATION"
+  ) {
+    throw new Response("Assignment rules are only for B2B catalogs", {
+      status: 400,
+    });
+  }
+
   if (body.intent === "assignment-save") {
     const assignmentRules = sanitiseAssignmentRules(body.assignmentRules);
     const result = await saveAssignmentRules(
@@ -305,22 +316,37 @@ export const action = async ({
   };
 };
 
+function sanitiseMatchMode(value: unknown): MatchMode {
+  return value === "ANY" ? "ANY" : "ALL";
+}
+
+/** Shared by sanitiseRules and sanitiseAssignmentRules: the fields every
+ * condition has, whatever rule set it belongs to. */
+function sanitiseConditionFields(c: {
+  field?: unknown;
+  operator?: unknown;
+  value?: unknown;
+  metafieldKey?: unknown;
+  metafieldType?: unknown;
+}) {
+  return {
+    field: String(c.field ?? ""),
+    operator: String(c.operator ?? ""),
+    value: c.value === null || c.value === undefined ? null : String(c.value),
+    metafieldKey: c.metafieldKey ? String(c.metafieldKey) : null,
+    metafieldType: c.metafieldType ? String(c.metafieldType) : null,
+  };
+}
+
 /** Only accept the shape the page sends. */
 function sanitiseRules(input: SavedRules | undefined): SavedRules {
-  const match = (value: unknown): MatchMode =>
-    value === "ANY" ? "ANY" : "ALL";
   return {
-    includeMatch: match(input?.includeMatch),
-    excludeMatch: match(input?.excludeMatch ?? "ANY"),
+    includeMatch: sanitiseMatchMode(input?.includeMatch),
+    excludeMatch: sanitiseMatchMode(input?.excludeMatch ?? "ANY"),
     conditions: (Array.isArray(input?.conditions) ? input.conditions : []).map(
       (c): RuleCondition => ({
         group: c.group === "EXCLUDE" ? "EXCLUDE" : "INCLUDE",
-        field: String(c.field ?? ""),
-        operator: String(c.operator ?? ""),
-        value:
-          c.value === null || c.value === undefined ? null : String(c.value),
-        metafieldKey: c.metafieldKey ? String(c.metafieldKey) : null,
-        metafieldType: c.metafieldType ? String(c.metafieldType) : null,
+        ...sanitiseConditionFields(c),
       }),
     ),
   };
@@ -330,19 +356,10 @@ function sanitiseRules(input: SavedRules | undefined): SavedRules {
 function sanitiseAssignmentRules(
   input: SavedAssignmentRules | undefined,
 ): SavedAssignmentRules {
-  const match = (value: unknown): MatchMode =>
-    value === "ANY" ? "ANY" : "ALL";
   return {
-    includeMatch: match(input?.includeMatch),
+    includeMatch: sanitiseMatchMode(input?.includeMatch),
     conditions: (Array.isArray(input?.conditions) ? input.conditions : []).map(
-      (c): AssignmentCondition => ({
-        field: String(c.field ?? ""),
-        operator: String(c.operator ?? ""),
-        value:
-          c.value === null || c.value === undefined ? null : String(c.value),
-        metafieldKey: c.metafieldKey ? String(c.metafieldKey) : null,
-        metafieldType: c.metafieldType ? String(c.metafieldType) : null,
-      }),
+      (c): AssignmentCondition => sanitiseConditionFields(c),
     ),
   };
 }
@@ -1231,6 +1248,18 @@ function ConditionGroupEditor({
   );
 }
 
+/**
+ * What a dropdown-valued metafield condition starts as, so it never sits
+ * empty. Shared by the product and assignment condition rows.
+ */
+function defaultMetafieldValue(
+  chosen: { type: string; choices: string[] | null } | undefined,
+): string {
+  return chosen && metafieldKind(chosen.type) === "boolean"
+    ? "true"
+    : (chosen?.choices?.[0] ?? "");
+}
+
 function ConditionRow({
   condition,
   error,
@@ -1259,14 +1288,6 @@ function ConditionRow({
     (field) =>
       field !== "metafield" || metafieldDefinitions.length > 0 || isMetafield,
   );
-
-  /** What a dropdown-valued metafield starts as, so it never sits empty. */
-  const defaultMetafieldValue = (
-    chosen: RuleMetafieldDefinition | undefined,
-  ) =>
-    chosen && metafieldKind(chosen.type) === "boolean"
-      ? "true"
-      : (chosen?.choices?.[0] ?? "");
 
   const chooseMetafield = (key: string) => {
     const chosen = metafieldDefinitions.find((d) => d.key === key);
@@ -1500,6 +1521,86 @@ function placeholderFor(field: ConditionField): string {
   }
 }
 
+/**
+ * A preview's "Show" dropdown: which of a fixed set of lists to display,
+ * remounted whenever the option labels' counts change (`s-select` doesn't
+ * redraw its selected label on its own). Shared by the product and
+ * assignment preview sections.
+ */
+function PreviewListSelect<K extends string>({
+  value,
+  onChange,
+  options,
+  remountKey,
+}: {
+  value: K;
+  onChange: (value: K) => void;
+  options: { value: K; label: string }[];
+  remountKey: string;
+}) {
+  return (
+    <s-select
+      key={remountKey}
+      label="Show"
+      value={value}
+      onChange={(event) => onChange(event.currentTarget.value as K)}
+    >
+      {options.map((option) => (
+        <s-option key={option.value} value={option.value}>
+          {option.label}
+        </s-option>
+      ))}
+    </s-select>
+  );
+}
+
+interface PreviewTableRow {
+  key: string;
+  primary: ReactNode;
+  inline: ReactNode;
+  secondary: ReactNode;
+}
+
+/** The rows for whichever list is showing. Shared by both preview sections. */
+function PreviewTable({
+  rows,
+  emptyText,
+  headers,
+}: {
+  rows: PreviewTableRow[];
+  emptyText: string;
+  headers: [string, string, string];
+}) {
+  if (rows.length === 0) return <s-paragraph>{emptyText}</s-paragraph>;
+  return (
+    <s-table>
+      <s-table-header-row>
+        <s-table-header listSlot="primary">{headers[0]}</s-table-header>
+        <s-table-header listSlot="inline">{headers[1]}</s-table-header>
+        <s-table-header listSlot="secondary">{headers[2]}</s-table-header>
+      </s-table-header-row>
+      <s-table-body>
+        {rows.map((row) => (
+          <s-table-row key={row.key}>
+            <s-table-cell>{row.primary}</s-table-cell>
+            <s-table-cell>{row.inline}</s-table-cell>
+            <s-table-cell>{row.secondary}</s-table-cell>
+          </s-table-row>
+        ))}
+      </s-table-body>
+    </s-table>
+  );
+}
+
+function ShowingCount({ shown, total }: { shown: number; total: number }) {
+  if (total <= shown) return null;
+  return (
+    <s-paragraph>
+      Showing the first {shown} of {total}.
+    </s-paragraph>
+  );
+}
+
 type ListName = "add" | "remove" | "unchanged";
 
 function PreviewSection({
@@ -1591,53 +1692,35 @@ function PreviewSection({
           </s-banner>
         )}
 
-        <s-select
-          // s-select doesn't redraw its selected label when an option's text
-          // changes, so remount it whenever the counts change.
-          key={`${preview.toAdd}-${preview.toRemove}-${preview.unchanged}`}
-          label="Show"
+        <PreviewListSelect
           value={list}
-          onChange={(event) => setList(event.currentTarget.value as ListName)}
-        >
-          <s-option value="add">Would be added ({preview.toAdd})</s-option>
-          <s-option value="remove">
-            Would be removed ({preview.toRemove})
-          </s-option>
-          <s-option value="unchanged">Unchanged ({preview.unchanged})</s-option>
-        </s-select>
+          onChange={setList}
+          remountKey={`${preview.toAdd}-${preview.toRemove}-${preview.unchanged}`}
+          options={[
+            { value: "add", label: `Would be added (${preview.toAdd})` },
+            { value: "remove", label: `Would be removed (${preview.toRemove})` },
+            { value: "unchanged", label: `Unchanged (${preview.unchanged})` },
+          ]}
+        />
 
-        {rows[list].length === 0 ? (
-          <s-paragraph>No products.</s-paragraph>
-        ) : (
-          <s-table>
-            <s-table-header-row>
-              <s-table-header listSlot="primary">Product</s-table-header>
-              <s-table-header listSlot="inline">Status</s-table-header>
-              <s-table-header listSlot="secondary">Why</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {rows[list].map((row) => (
-                <s-table-row key={row.productId}>
-                  <s-table-cell>{row.title}</s-table-cell>
-                  <s-table-cell>
-                    <s-stack direction="inline" gap="small-200">
-                      {row.status && <s-badge>{titleCase(row.status)}</s-badge>}
-                      {row.notVisible && (
-                        <s-badge tone="warning">Not on Online Store</s-badge>
-                      )}
-                    </s-stack>
-                  </s-table-cell>
-                  <s-table-cell>{row.reason}</s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
-        )}
-        {counts[list] > rows[list].length && (
-          <s-paragraph>
-            Showing the first {rows[list].length} of {counts[list]}.
-          </s-paragraph>
-        )}
+        <PreviewTable
+          emptyText="No products."
+          headers={["Product", "Status", "Why"]}
+          rows={rows[list].map((row) => ({
+            key: row.productId,
+            primary: row.title,
+            inline: (
+              <s-stack direction="inline" gap="small-200">
+                {row.status && <s-badge>{titleCase(row.status)}</s-badge>}
+                {row.notVisible && (
+                  <s-badge tone="warning">Not on Online Store</s-badge>
+                )}
+              </s-stack>
+            ),
+            secondary: row.reason,
+          }))}
+        />
+        <ShowingCount shown={rows[list].length} total={counts[list]} />
       </s-stack>
     </s-section>
   );
@@ -1742,13 +1825,6 @@ function AssignmentConditionRow({
     (d) => d.key === condition.metafieldKey,
   );
   const operators = assignmentOperatorsFor(condition.metafieldType);
-
-  const defaultMetafieldValue = (
-    chosen: AssignmentMetafieldDefinition | undefined,
-  ) =>
-    chosen && metafieldKind(chosen.type) === "boolean"
-      ? "true"
-      : (chosen?.choices?.[0] ?? "");
 
   const chooseMetafield = (key: string) => {
     const chosen = definitionsForField.find((d) => d.key === key);
@@ -1902,48 +1978,34 @@ function AssignmentPreviewSection({
           {loading ? " Updating..." : ""}
         </s-paragraph>
 
-        <s-select
-          key={`${preview.toAdd}-${preview.alreadyAssigned}-${preview.notMatched}`}
-          label="Show"
+        <PreviewListSelect
           value={list}
-          onChange={(event) =>
-            setList(event.currentTarget.value as AssignmentListName)
-          }
-        >
-          <s-option value="add">Would be added ({preview.toAdd})</s-option>
-          <s-option value="already-assigned">
-            Already assigned ({preview.alreadyAssigned})
-          </s-option>
-          <s-option value="not-matched">
-            Doesn&apos;t match ({preview.notMatched})
-          </s-option>
-        </s-select>
+          onChange={setList}
+          remountKey={`${preview.toAdd}-${preview.alreadyAssigned}-${preview.notMatched}`}
+          options={[
+            { value: "add", label: `Would be added (${preview.toAdd})` },
+            {
+              value: "already-assigned",
+              label: `Already assigned (${preview.alreadyAssigned})`,
+            },
+            {
+              value: "not-matched",
+              label: `Doesn't match (${preview.notMatched})`,
+            },
+          ]}
+        />
 
-        {rows[list].length === 0 ? (
-          <s-paragraph>No locations.</s-paragraph>
-        ) : (
-          <s-table>
-            <s-table-header-row>
-              <s-table-header listSlot="primary">Location</s-table-header>
-              <s-table-header listSlot="inline">Company</s-table-header>
-              <s-table-header listSlot="secondary">Why</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {rows[list].map((row) => (
-                <s-table-row key={row.locationId}>
-                  <s-table-cell>{row.name}</s-table-cell>
-                  <s-table-cell>{row.companyName}</s-table-cell>
-                  <s-table-cell>{row.reason}</s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
-        )}
-        {counts[list] > rows[list].length && (
-          <s-paragraph>
-            Showing the first {rows[list].length} of {counts[list]}.
-          </s-paragraph>
-        )}
+        <PreviewTable
+          emptyText="No locations."
+          headers={["Location", "Company", "Why"]}
+          rows={rows[list].map((row) => ({
+            key: row.locationId,
+            primary: row.name,
+            inline: row.companyName,
+            secondary: row.reason,
+          }))}
+        />
+        <ShowingCount shown={rows[list].length} total={counts[list]} />
       </s-stack>
     </s-section>
   );
