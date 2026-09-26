@@ -517,6 +517,32 @@ billed as regular services on the same rates. Not yet set up: the two Railway se
 (`DATABASE_URL`, `REDIS_URL`, `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`,
 `SHOPIFY_APP_URL`, `SCOPES`, `SHOPIFY_APP_HANDLE`).
 
+**Verified locally (Sep 2026, `docker build` against the real Dockerfile, run against the
+dev store's local Postgres/Redis via `host.docker.internal`)**:
+
+- **Found and fixed a real secret leak**: `.dockerignore` didn't exclude `.env`, so
+  `COPY . .` baked the real `SHOPIFY_API_KEY`/`SHOPIFY_API_SECRET` straight into the
+  image layers. Fixed by adding `.env`, `.env.*` (keeping `!.env.example`), `.git` and
+  `.shopify` to `.dockerignore`. Confirmed after the fix: `/app/.env` doesn't exist in
+  the built image. This must ship before any image is ever built for a real deploy,
+  since Railway (like any registry-based host) would otherwise persist that secret in
+  build layers.
+- The **web service** needs no changes: the existing `CMD ["npm", "run",
+  "docker-start"]` (`prisma generate && prisma migrate deploy`, then
+  `react-router-serve`) works as-is. Confirmed: migrations apply against a real
+  Postgres, the server boots, and it serves a real `HTTP 200`.
+- The **worker service** needs a start-command override on Railway (its own Dockerfile
+  `CMD` only runs the web process): `npm run setup && npx tsx app/worker.ts`. Note this
+  drops `--env-file=.env` (Railway injects env vars directly, and there's no `.env` file
+  in the image or in production) and `--watch` (a dev-only convenience; a production
+  worker doesn't need to hot-reload on file changes). `tsx` itself works fine at runtime
+  in the production image (it's a devDependency, but survives `npm ci --omit=dev` here
+  since something in the production dependency tree already pulls it in transitively;
+  confirmed by running it directly). Confirmed: `prisma generate`/`migrate deploy` run
+  cleanly a second time (Prisma's migrate is safe to run from both services on boot;
+  "No pending migrations to apply" the second time), then the worker logs "Smart
+  Catalogs worker ready: watching...".
+
 ## Dev store
 
 "Catalog Manager Test" (catalog-manager-test.myshopify.com), Shopify Plus App Development
