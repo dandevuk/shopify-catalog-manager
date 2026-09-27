@@ -1,8 +1,8 @@
 @AGENTS.md
 
-# Smart Catalogs (shopify-catalog-manager)
+# Catalogic (shopify-catalog-manager)
 
-Public Shopify app (working name "Smart Catalogs") that adds smart-collection-style
+Public Shopify app (working name "Catalogic") that adds smart-collection-style
 include/exclude rules to Market and B2B catalogs and keeps each catalog's product list
 in sync automatically. Owner: Dan, as his own product (personal Shopify Partner/Dev Dashboard organisation, not Quickfire Digital).
 

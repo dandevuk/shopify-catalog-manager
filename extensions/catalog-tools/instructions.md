@@ -1,6 +1,6 @@
 ## When to use these tools
 
-Smart Catalogs lets merchants build Market and B2B catalogs from
+Catalogic lets merchants build Market and B2B catalogs from
 include/exclude rules (tags, vendor, product type, category, collection,
 metafields), and for B2B catalogs, which company locations get assigned to
 them. Use these tools when the merchant asks about which of their existing
@@ -20,9 +20,9 @@ catalogs matches a description, or what a specific catalog's rules do.
 - If a tool returns no matches, say so plainly rather than guessing. Don't
   invent a catalog or rule that wasn't in the tool's response.
 - When a result includes a `url`, offer it as a link to open the catalog's
-  rule builder in Smart Catalogs so the merchant can review or change the
+  rule builder in Catalogic so the merchant can review or change the
   rules themselves.
-- The merchant may describe things Smart Catalogs doesn't have a rule field
+- The merchant may describe things Catalogic doesn't have a rule field
   for yet (for example, customer segments or customer tags for B2B
   assignment). If a search comes back empty, don't assume the catalog
   doesn't exist; it may just be described in words the tool doesn't index

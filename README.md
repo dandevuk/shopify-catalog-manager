@@ -1,4 +1,4 @@
-# Smart Catalogs (shopify-catalog-manager)
+# Catalogic (shopify-catalog-manager)
 
 A Shopify app that adds smart-collection-style rules to Market and B2B catalogs and keeps
 each catalog's product list in sync automatically. See `CLAUDE.md` for the confirmed
@@ -56,7 +56,7 @@ Run these from the repo folder (PowerShell or Git Bash on Windows):
    npm run config:link
    ```
 
-   Choose "Create a new app" (for example "Smart Catalogs Dev"). This fills in
+   Choose "Create a new app" (for example "Catalogic Dev"). This fills in
    `client_id` and the app URLs in `shopify.app.toml`.
 
 6. **Run the app**

@@ -80,8 +80,8 @@ export default function CatalogsPage() {
         <s-paragraph>
           Every Market and B2B catalog in the store. A catalog with its own
           product list (a publication) doesn&apos;t receive new products
-          automatically unless auto-publish is on, which is the problem Smart
-          Catalogs solves. Sales channel catalogs are hidden.
+          automatically unless auto-publish is on, which is the problem
+          Catalogic solves. Sales channel catalogs are hidden.
         </s-paragraph>
       </s-section>
 

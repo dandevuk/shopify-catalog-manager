@@ -86,7 +86,7 @@ void scheduleAssignmentScan().catch((error) => {
 });
 
 console.log(
-  `Smart Catalogs worker ready: watching "${RECHECK_QUEUE_NAME}", "${CATALOG_SYNC_QUEUE_NAME}" and "${ASSIGNMENT_SCAN_QUEUE_NAME}".`,
+  `Catalogic worker ready: watching "${RECHECK_QUEUE_NAME}", "${CATALOG_SYNC_QUEUE_NAME}" and "${ASSIGNMENT_SCAN_QUEUE_NAME}".`,
 );
 
 async function shutdown(signal: string): Promise<void> {

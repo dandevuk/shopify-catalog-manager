@@ -2,7 +2,7 @@
   {
     "$schema": "https://extensions.shopifycdn.com/shopifycloud/schemas/v1/tool.json",
     "name": "search_catalogs",
-    "description": "Find the merchant's Market or B2B catalogs whose saved Smart Catalogs rules would likely match a described group of products or customers, e.g. 'VIP customers', 'wholesale companies', 'snowboards'. Searches catalog names and saved rule conditions: product tags, vendor, product type, title, category, collection, product metafield values, and for B2B catalogs the company and location metafields that control catalog assignment. Read-only: doesn't create, change, or apply anything.",
+    "description": "Find the merchant's Market or B2B catalogs whose saved Catalogic rules would likely match a described group of products or customers, e.g. 'VIP customers', 'wholesale companies', 'snowboards'. Searches catalog names and saved rule conditions: product tags, vendor, product type, title, category, collection, product metafield values, and for B2B catalogs the company and location metafields that control catalog assignment. Read-only: doesn't create, change, or apply anything.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -45,7 +45,7 @@
               "url": {
                 "type": "string",
                 "nullable": true,
-                "description": "Admin URL to the catalog's rule builder in Smart Catalogs, if available"
+                "description": "Admin URL to the catalog's rule builder in Catalogic, if available"
               }
             },
             "required": ["id", "type", "title", "description"]
@@ -57,7 +57,7 @@
   {
     "$schema": "https://extensions.shopifycdn.com/shopifycloud/schemas/v1/tool.json",
     "name": "describe_catalog_rules",
-    "description": "Explain in plain language what a specific catalog's saved Smart Catalogs rules currently do, given the catalog's title as it appears in Shopify. Read-only: doesn't create, change, or apply anything.",
+    "description": "Explain in plain language what a specific catalog's saved Catalogic rules currently do, given the catalog's title as it appears in Shopify. Read-only: doesn't create, change, or apply anything.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -83,7 +83,7 @@
         "url": {
           "type": "string",
           "nullable": true,
-          "description": "Admin URL to the catalog's rule builder in Smart Catalogs, if available"
+          "description": "Admin URL to the catalog's rule builder in Catalogic, if available"
         },
         "includeRules": {
           "type": "string",

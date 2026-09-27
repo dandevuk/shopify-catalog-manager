@@ -1,6 +1,6 @@
 # Sidekick app data extension
 
-Read-only Sidekick tools for Smart Catalogs (`admin.app.tools.data` target).
+Read-only Sidekick tools for Catalogic (`admin.app.tools.data` target).
 See CLAUDE.md's "Planned features" section for the full scope and design
 notes.
 

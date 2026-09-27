@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "f28912af1b6a71b6390200d76a0216ef"
-name = "Smart Catalogs Dev"
+name = "Catalogic Dev"
 application_url = "https://web-production-8251a.up.railway.app"
 embedded = true
 
@@ -65,4 +65,4 @@ redirect_urls = [
 
 [sidekick]
 # Required once the app has any Sidekick-eligible extension (extensions/catalog-tools).
-extensions_summary = "Searches and explains the merchant's saved Smart Catalogs rules for Market and B2B catalogs, to help find or understand which catalog matches a described group of products or customers."
+extensions_summary = "Searches and explains the merchant's saved Catalogic rules for Market and B2B catalogs, to help find or understand which catalog matches a described group of products or customers."

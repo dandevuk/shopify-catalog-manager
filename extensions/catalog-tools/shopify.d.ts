@@ -36,7 +36,7 @@ declare module './src/index.js' {
        */
       description: string;
       /**
-       * Admin URL to the catalog's rule builder in Smart Catalogs, if available
+       * Admin URL to the catalog's rule builder in Catalogic, if available
        */
       url?: string;
       [k: string]: unknown;
@@ -63,7 +63,7 @@ declare module './src/index.js' {
      */
     type?: string;
     /**
-     * Admin URL to the catalog's rule builder in Smart Catalogs, if available
+     * Admin URL to the catalog's rule builder in Catalogic, if available
      */
     url?: string;
     /**
@@ -83,27 +83,28 @@ declare module './src/index.js' {
 
   interface ShopifyTools {
     /**
-     * Find the merchant's Market or B2B catalogs whose saved Smart Catalogs rules would likely match a described group of products or customers, e.g. 'VIP customers', 'wholesale companies', 'snowboards'. Searches catalog names and saved rule conditions: product tags, vendor, product type, title, category, collection, product metafield values, and for B2B catalogs the company and location metafields that control catalog assignment. Read-only: doesn't create, change, or apply anything.
+     * Find the merchant's Market or B2B catalogs whose saved Catalogic rules would likely match a described group of products or customers, e.g. 'VIP customers', 'wholesale companies', 'snowboards'. Searches catalog names and saved rule conditions: product tags, vendor, product type, title, category, collection, product metafield values, and for B2B catalogs the company and location metafields that control catalog assignment. Read-only: doesn't create, change, or apply anything.
      */
     register(
       name: 'search_catalogs',
       handler: (
-        input: SearchCatalogsInput
-      ) => SearchCatalogsOutput | Promise<SearchCatalogsOutput>
-    );
+        input: SearchCatalogsInput,
+      ) => SearchCatalogsOutput | Promise<SearchCatalogsOutput>,
+    ): () => void;
     /**
-     * Explain in plain language what a specific catalog's saved Smart Catalogs rules currently do, given the catalog's title as it appears in Shopify. Read-only: doesn't create, change, or apply anything.
+     * Explain in plain language what a specific catalog's saved Catalogic rules currently do, given the catalog's title as it appears in Shopify. Read-only: doesn't create, change, or apply anything.
      */
     register(
       name: 'describe_catalog_rules',
       handler: (
-        input: DescribeCatalogRulesInput
-      ) => DescribeCatalogRulesOutput | Promise<DescribeCatalogRulesOutput>
-    );
+        input: DescribeCatalogRulesInput,
+      ) => DescribeCatalogRulesOutput | Promise<DescribeCatalogRulesOutput>,
+    ): () => void;
   }
 
-  const shopify: import('@shopify/ui-extensions/admin.app.tools.data').Api & {
-    tools: ShopifyTools;
-  };
+  const shopify: import('@shopify/ui-extensions/admin').WithGeneratedTools<
+    import('@shopify/ui-extensions/admin.app.tools.data').Api,
+    ShopifyTools
+  >;
   const globalThis: { shopify: typeof shopify };
 }
