@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "f28912af1b6a71b6390200d76a0216ef"
-name = "Catalogic Dev"
+name = "Catalogic"
 application_url = "https://web-production-8251a.up.railway.app"
 embedded = true
 
