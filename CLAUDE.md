@@ -207,9 +207,12 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   catalog contexts, compliance, app lifecycle).
 - `app/lib/queue/connection.server.ts`: one Redis connection per Queue/Worker instance.
   `queues.server.ts`: job data types, the `product-index-recheck` and `catalog-sync`
-  queues, and scheduling helpers. Job IDs use `|` as the separator, never `:` (BullMQ
-  rejects a custom ID containing `:` unless it splits into exactly 3 parts, and Shopify
-  GIDs contain `:`). `upsertDelayedJob` debounces by removing any existing job with the
+  queues, and scheduling helpers. Job IDs must contain no `:` at all: BullMQ rejects a
+  custom ID containing one unless it splits into exactly 3 parts (`Job.addJob` in
+  `bullmq/dist/cjs/classes/job.js`). Using `|` as the separator is only half of that,
+  because a Shopify GID carries its own colon in `gid://`, so IDs also reduce a GID to
+  its trailing numeric ID via `gidTail` (see the recheck bug below).
+  `upsertDelayedJob` debounces by removing any existing job with the
   same ID before adding the delayed replacement. `CATALOG_SYNC_DEBOUNCE_MS` is 2 minutes,
   confirmed end to end on the dev store (Sep 2026): a tag edit's webhook queued a debounced
   job that fired 2 minutes later and re-synced the affected managed catalog with no
@@ -259,6 +262,22 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    syncs use `SyncCause.WEBHOOK`; a synthetic acknowledgement is built from the freshly
    computed plan (no merchant confirmation for automatic runs), so the same safety checks
    in `managed.server.ts` (large-removal pause, one sync per catalog) still apply.
+   **Correction (14 Oct 2026): only the `catalog-sync` half of this was really working.**
+   Every `product-index-recheck` job failed to schedule from Sep 2026 until 14 Oct 2026,
+   because its job ID embedded a Shopify GID and so contained a colon, which BullMQ
+   rejects (see the queue entry in the code map). `upsertDelayedJob` caught the error,
+   logged "Couldn't schedule ...", and carried on, so the webhooks still looked healthy
+   and the Sep 2026 end-to-end test still passed: that test exercised a tag edit's
+   debounced catalog sync, whose job ID is `shop|cuid` with no colon in it. The delayed
+   re-reads for collection-condition membership (findings 15 to 17) were simply never
+   queued. Fixed with `gidTail`, and verified against the live local Redis: a product and
+   a collection recheck now enqueue all six jobs at 30 s, 2 min and 10 min, with the full
+   GID still in the job data. Two lessons worth keeping. The queue tests mock BullMQ, so
+   they can't see a rule BullMQ itself enforces; the guard that works under the mock is
+   asserting directly that no job ID contains a colon (`job ids` in
+   `queues.server.test.ts`). And a `catch` that logs and carries on will hide a permanent
+   failure indefinitely, because nothing ever escalates: the only signal was a line in the
+   logs that no one had reason to read.
    `runAutomaticSync` re-reads the catalog live (`loadRuleCatalog`) rather than trusting
    cached DB fields, so a merchant re-enabling "Automatically add new products" takes
    effect immediately. Requires `npm run worker` running (a separate terminal in dev);
@@ -505,6 +524,13 @@ references anywhere). Researched ahead of the first App Store submission.
 
 ## Hosting
 
+`infrastructure-handover.md` at the repo root is the briefing for whoever takes
+over this area: architecture, the dev loop, the Railway setup, the gotchas that
+have already cost time, the cost model, and the hosting alternatives already
+assessed. Written for a collaborator and their Claude, so it repeats some of
+what's below in a more self-contained form. Keep the two in step.
+
+
 **Railway project "smart-catalogs" is live (Sep 2026)**, on the Hobby plan ($5/month,
 upgraded from the 30-day trial). Four services: `web` and `worker` (both from
 `dandevuk/shopify-catalog-manager` via the existing `Dockerfile`), plus managed
@@ -626,6 +652,19 @@ informational notes:
 - **2.1.4 (synchronize data accurately)**: the testing instructions now include a step
   verifying the applied catalog against the Shopify admin.
 
+**Fix verified in the browser (14 Oct 2026, PR #11, merged as `c0cc6d3`).** Walked the
+reviewer's path on the dev store against the live Railway build: "Sync Test" Market
+catalog, include condition "Vendor is Driftline", Save rules, Review changes, tick the
+large-removal confirmation, Apply changes. No gate appeared; the sync reported 19 added
+and 23 removed, the preview converged to "0 to add, 0 to remove, 29 unchanged" on
+reload, and the Shopify admin's own Catalogs page showed Sync Test at 29 products, all
+Driftline (the Draft one included), with "Automatically include new products" off. Note
+what this does and does not prove: the dev store can't reproduce the blocker itself,
+because the removed gate only ever fired on non-development stores. What stands behind
+the fix for a non-dev store is that `blockersFor` no longer makes any plan-dependent
+check at all (the `getShopDiagnostics` call went with the gate), so there is nothing
+left to behave differently by store type. "Sync Test" was left managed by the app.
+
 ## Commands
 
 - `npm run db:up` / `npm run db:down`: start/stop Postgres and Redis (Docker).
@@ -637,6 +676,45 @@ informational notes:
   child process) and a non-empty `SHOPIFY_APP_URL` (any placeholder works; the worker
   never runs the OAuth/install flow that actually uses it).
 - `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`.
+
+### What the dev loop actually needs
+
+Postgres is the only hard requirement: it holds the Shopify sessions (the offline
+access tokens), the product index, the saved rules and the audit log, and rules are
+evaluated against the index rather than live admin search (finding 8), so there's no
+stateless version of the app. It needn't be the Docker one, though. A hosted
+development database (Neon, Supabase, Prisma Postgres) works with nothing more than a
+new `DATABASE_URL` and one `npx prisma migrate deploy`; use the direct, unpooled
+connection string so `prisma migrate` works without a `directUrl` in the schema.
+Production should stay on a database that doesn't sleep on idle, since a cold start
+would land on a merchant's request.
+
+**Redis is optional in development** (Oct 2026). Only `webhooks.products.tsx` and
+`webhooks.collections.tsx` reach a queue from the web process, so with `REDIS_URL`
+unset the app still serves every page and every merchant-facing action: rule builder,
+live preview, Save, Review changes, Apply to Shopify, index rebuilds and manual "Sync
+now". `queueingUnavailable()` in `app/lib/queue/queues.server.ts` makes the scheduling
+helpers no-op with one warning per process instead of throwing. What's off while it's
+unset is the delayed index re-reads (findings 15 to 17) and automatic catalog syncs, so
+set `REDIS_URL` and run `npm run worker` when testing either. The worker is deliberately
+the opposite and fails loudly without it, since it has nothing to do with no queue.
+
+Together those mean a Docker-free dev loop: a hosted `DATABASE_URL`, no `REDIS_URL`, and
+`npm run dev` on its own. None of this touches merchants, who only ever install the
+hosted app; the database, Redis and worker are the app's own infrastructure on Railway.
+
+Gotcha: a **stale development app preview makes the released app look broken**. If
+`shopify app dev` is killed rather than exited cleanly, the store keeps loading the app
+from the dead tunnel, not `application_url`, and the embedded app renders as an empty
+grey iframe (briefly a broken-document icon) with no error anywhere: the admin never
+requests the real host at all, so there is nothing in the app's logs and nothing in the
+browser console to point at it. The tells are in the admin itself, a "dev previews (N)"
+badge in the bottom right corner and `DevSessions/app_dev` calls in the network tab.
+Fix it from that badge: the Dev Console lists a card per app, and "Clean dev preview"
+on the app's card restores the released version (its warning about deleting related
+data only applies to extensions the release doesn't have; `shopify app dev` recreates
+the preview next time it runs). Cost about 20 minutes on 14 Oct 2026 while testing the
+Railway build, where it was easy to misread as a failed deploy.
 
 Windows gotcha: `npm run dev`'s pre-dev `prisma generate` step can fail with
 `EPERM: operation not permitted, rename ... query_engine-windows.dll.node` if another
