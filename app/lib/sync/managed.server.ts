@@ -369,7 +369,17 @@ export async function runAutomaticSync(
   // any time, and step 2 of runSync only turns it off if it sees that.
   const catalog = await loadRuleCatalog(admin, shop.id, row.shopifyCatalogId);
   if (!catalog) {
-    console.error(`Managed catalog ${row.shopifyCatalogId} for ${shopDomain} no longer exists`);
+    // The catalog was deleted in Shopify. Nothing tells the app that directly:
+    // publications/delete covers the publication, not the catalog, and
+    // markets/* only covers markets, so an automatic sync finding it gone is
+    // the only notice we get. Stop managing the row rather than just logging,
+    // because every product change on the shop queues a sync for every managed
+    // catalog (scheduleManagedCatalogSyncs is coarse by design): an orphan
+    // would log on every sweep forever and bury real errors in the noise.
+    await stopManaging(row.id);
+    console.warn(
+      `Managed catalog ${row.shopifyCatalogId} for ${shopDomain} no longer exists in Shopify, so it's no longer managed.`,
+    );
     return;
   }
 
