@@ -70,6 +70,40 @@ function getAssignmentScanQueue() {
 }
 
 /**
+ * Whether background jobs can't be queued at all, because there's no Redis.
+ *
+ * Redis is optional in development. Only the product and collection webhook
+ * routes reach a queue from the web process, so with no REDIS_URL the app
+ * still serves every page and every merchant-facing action: the rule builder,
+ * the live preview, Save, Review changes, Apply to Shopify and index
+ * rebuilds. Scheduling then no-ops with one warning per process instead of
+ * throwing, which keeps `npm run dev` working with no local Redis (and so no
+ * Docker, when DATABASE_URL points at a hosted Postgres).
+ *
+ * What's lost while it's unset: the delayed re-reads that catch
+ * collection-condition membership (findings 15 to 17) and automatic syncs of
+ * managed catalogs. Manual "Sync now" still works, so the gap is visible and
+ * recoverable rather than silent.
+ *
+ * The worker is deliberately the opposite: it exists only to run jobs, so it
+ * fails loudly on a missing REDIS_URL (`redisConnection` throws). Production
+ * sets REDIS_URL on both services, so neither path applies there.
+ */
+let warnedNoRedis = false;
+function queueingUnavailable(): boolean {
+  if (process.env.REDIS_URL) return false;
+  if (!warnedNoRedis) {
+    warnedNoRedis = true;
+    console.warn(
+      "REDIS_URL isn't set, so background jobs are off: no delayed product index " +
+        "re-reads and no automatic catalog syncs. Manual syncing still works. Set " +
+        "REDIS_URL (`npm run db:up` starts a local Redis) to turn them back on.",
+    );
+  }
+  return true;
+}
+
+/**
  * Job ids below join their parts with "|", not ":": BullMQ rejects a custom
  * id containing a colon unless it splits into exactly 3 parts (a legacy
  * compatibility rule for its own repeatable-job ids, `Job.addJob` in
@@ -138,6 +172,7 @@ async function upsertDelayedJob(
  * over 30 s and under 2 min to apply collection conditions after a save).
  */
 export function scheduleProductRecheck(shopDomain: string, productId: string): void {
+  if (queueingUnavailable()) return;
   const queue = getRecheckQueue();
   RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
     const jobId = `${shopDomain}|product|${gidTail(productId)}|${attempt}`;
@@ -146,6 +181,7 @@ export function scheduleProductRecheck(shopDomain: string, productId: string): v
 }
 
 export function scheduleCollectionRecheck(shopDomain: string, collectionId: string): void {
+  if (queueingUnavailable()) return;
   const queue = getRecheckQueue();
   RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
     const jobId = `${shopDomain}|collection|${gidTail(collectionId)}|${attempt}`;
@@ -163,6 +199,7 @@ export function scheduleCollectionRecheck(shopDomain: string, collectionId: stri
 export const CATALOG_SYNC_DEBOUNCE_MS = 2 * 60_000;
 
 export function scheduleCatalogSync(shopDomain: string, catalogRecordId: string): void {
+  if (queueingUnavailable()) return;
   const jobId = `${shopDomain}|${catalogRecordId}`;
   void upsertDelayedJob(
     getCatalogSyncQueue(),
@@ -182,6 +219,8 @@ export function scheduleCatalogSync(shopDomain: string, catalogRecordId: string)
  * catalog's conditions use.
  */
 export async function scheduleManagedCatalogSyncs(shopDomain: string): Promise<void> {
+  // Checked before the query: with no Redis there's nothing to do with the result.
+  if (queueingUnavailable()) return;
   const catalogs = await prisma.catalog.findMany({
     where: { managed: true, shop: { domain: shopDomain } },
     select: { id: true },

@@ -47,6 +47,9 @@ beforeEach(() => {
   remove.mockResolvedValue(1);
   add.mockResolvedValue(undefined);
   upsertJobScheduler.mockResolvedValue(undefined);
+  // Scheduling no-ops without this (Redis is optional in development), so
+  // every test that expects jobs has to look like a configured environment.
+  process.env.REDIS_URL = "redis://localhost:6379";
 });
 
 describe("scheduleProductRecheck", () => {
@@ -184,6 +187,34 @@ describe("scheduleAssignmentScan", () => {
     expect(upsertJobScheduler).toHaveBeenCalledTimes(2);
     const ids = upsertJobScheduler.mock.calls.map((call) => call[0]);
     expect(new Set(ids).size).toBe(1);
+  });
+});
+
+/**
+ * Redis is optional in development: with no REDIS_URL the web process serves
+ * everything merchant-facing and just doesn't queue background work. These
+ * assertions live in one test on purpose, because the warning is emitted once
+ * per process and a second test couldn't see it again.
+ */
+describe("without REDIS_URL", () => {
+  it("skips scheduling instead of throwing, and warns once", async () => {
+    delete process.env.REDIS_URL;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    scheduleProductRecheck("shop.myshopify.com", "gid://shopify/Product/1");
+    scheduleCollectionRecheck("shop.myshopify.com", "gid://shopify/Collection/9");
+    scheduleCatalogSync("shop.myshopify.com", "catalog-1");
+    await scheduleManagedCatalogSyncs("shop.myshopify.com");
+    await flush();
+
+    expect(add).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    // Returns before the query, so a missing Redis costs no database work.
+    expect(prisma.catalog.findMany).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("REDIS_URL");
+
+    warn.mockRestore();
   });
 });
 

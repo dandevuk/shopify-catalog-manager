@@ -9,6 +9,14 @@ import IORedis from "ioredis";
  */
 export function redisConnection(): IORedis {
   const url = process.env.REDIS_URL;
-  if (!url) throw new Error("REDIS_URL isn't set.");
+  if (!url) {
+    // The web process never gets here: its scheduling helpers check for
+    // REDIS_URL first and no-op (see queueingUnavailable in queues.server.ts).
+    // So this only fires in the worker, which has nothing to do without Redis.
+    throw new Error(
+      "REDIS_URL isn't set, so the worker has no queue to read. Start Redis " +
+        "(`npm run db:up`) or point REDIS_URL at a hosted one.",
+    );
+  }
   return new IORedis(url, { maxRetriesPerRequest: null });
 }
