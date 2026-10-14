@@ -1,5 +1,14 @@
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useNavigate } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
+import {
+  useFetcher,
+  useLoaderData,
+  useNavigate,
+  useRevalidator,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
@@ -8,8 +17,12 @@ import {
   listCatalogs,
   type CatalogSummary,
 } from "../lib/shopify/catalogs.server";
+import { describeError } from "../lib/shopify/graphql.server";
 import {
+  checkProductIndexBuild,
   getProductIndexSummary,
+  startProductIndexRebuild,
+  type BuildProgress,
   type ProductIndexSummary,
 } from "../lib/product-index/index.server";
 import { formatDateTime } from "../lib/format";
@@ -25,6 +38,17 @@ type ManagedInfo = Record<
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   await ensureShop(session.shop);
+
+  // If a rebuild is marked as running, ask Shopify how it's doing. This also
+  // finishes a rebuild whose bulk_operations/finish webhook never arrived,
+  // which would otherwise leave the merchant stuck on "a rebuild is running".
+  let indexProgress: BuildProgress | null = null;
+  let indexCheckError: string | null = null;
+  try {
+    indexProgress = await checkProductIndexBuild(admin, session.shop);
+  } catch (error) {
+    indexCheckError = describeError(error);
+  }
 
   const [result, productIndex, records] = await Promise.all([
     listCatalogs(admin),
@@ -48,13 +72,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     contextError: result.contextError,
     durationMs: result.durationMs,
     productIndex,
+    indexProgress,
+    indexCheckError,
     managed,
   };
 };
 
+type ActionResult = { started: boolean; reason: string | null };
+
+export const action = async ({
+  request,
+}: ActionFunctionArgs): Promise<ActionResult> => {
+  const { admin, session } = await authenticate.admin(request);
+  const result = await startProductIndexRebuild(admin, session.shop);
+  return {
+    started: result.started,
+    reason: result.started ? null : result.reason,
+  };
+};
+
 export default function CatalogsPage() {
-  const { catalogs, contextError, durationMs, productIndex, managed } =
-    useLoaderData<typeof loader>();
+  const {
+    catalogs,
+    contextError,
+    durationMs,
+    productIndex,
+    indexProgress,
+    indexCheckError,
+    managed,
+  } = useLoaderData<typeof loader>();
+  const rebuild = useFetcher<typeof action>();
+  const revalidator = useRevalidator();
 
   const markets = catalogs.filter((catalog) => catalog.type === "MARKET");
   const b2b = catalogs.filter((catalog) => catalog.type === "COMPANY_LOCATION");
@@ -68,9 +116,9 @@ export default function CatalogsPage() {
         >
           <s-paragraph>
             The catalogs below are complete, but the app couldn&apos;t read
-            which markets or company locations they belong to. This usually
-            means an access scope is missing. Check the Diagnostics page for
-            details.
+            which markets or company locations they belong to. Reopening the
+            app usually clears this; if it keeps happening, get in touch and
+            quote the message below.
           </s-paragraph>
           <s-paragraph>{contextError}</s-paragraph>
         </s-banner>
@@ -85,7 +133,18 @@ export default function CatalogsPage() {
         </s-paragraph>
       </s-section>
 
-      <ProductIndexSection summary={productIndex} />
+      <ProductIndexSection
+        summary={productIndex}
+        progress={indexProgress}
+        checkError={indexCheckError}
+        rebuildBusy={rebuild.state !== "idle"}
+        refreshBusy={revalidator.state !== "idle"}
+        rebuildError={
+          rebuild.data && !rebuild.data.started ? rebuild.data.reason : null
+        }
+        onRebuild={() => rebuild.submit({}, { method: "post" })}
+        onRefresh={() => revalidator.revalidate()}
+      />
 
       <CatalogTable
         heading={`Market catalogs (${markets.length})`}
@@ -186,22 +245,89 @@ function CatalogTable({
   );
 }
 
-function ProductIndexSection({ summary }: { summary: ProductIndexSummary }) {
+function ProductIndexSection({
+  summary,
+  progress,
+  checkError,
+  rebuildBusy,
+  refreshBusy,
+  rebuildError,
+  onRebuild,
+  onRefresh,
+}: {
+  summary: ProductIndexSummary;
+  progress: BuildProgress | null;
+  checkError: string | null;
+  rebuildBusy: boolean;
+  refreshBusy: boolean;
+  rebuildError: string | null;
+  onRebuild: () => void;
+  onRefresh: () => void;
+}) {
+  const running = summary.status === "RUNNING";
+
   return (
     <s-section heading="Product index">
+      <s-paragraph>
+        Catalogic keeps its own copy of every product&apos;s rule fields (tags,
+        vendor, type, collections, metafields and so on) so rules are evaluated
+        instantly. It&apos;s built when you install the app and kept up to date
+        as products change.
+      </s-paragraph>
       <s-paragraph>
         {summary.productCount} products indexed.{" "}
         {summary.rebuiltAt
           ? `Last rebuilt ${formatDateTime(summary.rebuiltAt)}.`
           : "The index hasn't been built yet."}
-        {summary.status === "RUNNING" ? " A rebuild is running." : ""}
       </s-paragraph>
+
+      {running && (
+        <s-banner tone="info" heading="Building the product index">
+          <s-paragraph>
+            Started{" "}
+            {summary.startedAt ? formatDateTime(summary.startedAt) : "recently"}
+            .{" "}
+            {progress?.running
+              ? `${progress.productCount} products read so far. `
+              : ""}
+            Rules can&apos;t be applied until it finishes. Use Refresh status to
+            check on it.
+          </s-paragraph>
+        </s-banner>
+      )}
       {summary.status === "FAILED" && (
         <s-banner tone="critical" heading="The last rebuild failed">
           <s-paragraph>{summary.error}</s-paragraph>
-          <s-paragraph>Rebuild it from the Diagnostics page.</s-paragraph>
+          <s-paragraph>Rebuild the index to try again.</s-paragraph>
         </s-banner>
       )}
+      {rebuildError && (
+        <s-banner tone="warning" heading="Rebuild not started">
+          <s-paragraph>{rebuildError}</s-paragraph>
+        </s-banner>
+      )}
+      {checkError && (
+        <s-banner tone="warning" heading="Couldn't check the running rebuild">
+          <s-paragraph>{checkError}</s-paragraph>
+        </s-banner>
+      )}
+
+      <s-stack direction="inline" gap="base">
+        <s-button
+          variant={summary.rebuiltAt ? "secondary" : "primary"}
+          disabled={running}
+          onClick={onRebuild}
+          {...(rebuildBusy ? { loading: true } : {})}
+        >
+          Rebuild index
+        </s-button>
+        <s-button
+          onClick={onRefresh}
+          {...(refreshBusy ? { loading: true } : {})}
+        >
+          Refresh status
+        </s-button>
+      </s-stack>
     </s-section>
   );
 }
