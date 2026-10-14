@@ -280,7 +280,14 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    logs that no one had reason to read.
    `runAutomaticSync` re-reads the catalog live (`loadRuleCatalog`) rather than trusting
    cached DB fields, so a merchant re-enabling "Automatically add new products" takes
-   effect immediately. Requires `npm run worker` running (a separate terminal in dev);
+   effect immediately. If that read comes back empty the catalog has been deleted in
+   Shopify, and the row is marked unmanaged (14 Oct 2026): nothing reports a deleted
+   catalog directly (`publications/delete` is the publication, `markets/*` only markets),
+   so this is the only notice the app gets. It used to just log, which meant two orphaned
+   B2B rows on the dev store logged an error on every sweep, found in the Railway logs
+   while verifying the recheck fix. Since every product change queues a sync for every
+   managed catalog, an orphan logs forever and buries real errors, which is how the
+   recheck bug above stayed hidden. Requires `npm run worker` running (a separate terminal in dev);
    syncs no longer run in-process on the web server.
 
 ## Phase 2 next steps
