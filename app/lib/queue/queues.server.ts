@@ -72,11 +72,27 @@ function getAssignmentScanQueue() {
 /**
  * Job ids below join their parts with "|", not ":": BullMQ rejects a custom
  * id containing a colon unless it splits into exactly 3 parts (a legacy
- * compatibility rule for its own repeatable-job ids), and Shopify GIDs
- * (`gid://shopify/Product/123`) contain one, so a naive `:`-joined id
- * throws "Custom Id cannot contain :" the first time a real product or
- * collection is involved (caught testing this against real Redis).
+ * compatibility rule for its own repeatable-job ids, `Job.addJob` in
+ * bullmq/dist/cjs/classes/job.js).
+ *
+ * Changing the separator is only half of it, though, and that half-fix
+ * shipped broken from Sep 2026 until 14 Oct 2026: a Shopify GID contains a
+ * colon of its own in "gid://", so `shop|product|gid://shopify/Product/1|0`
+ * still split into 2 parts and still threw "Custom Id cannot contain :".
+ * Every product and collection recheck therefore failed to schedule, and
+ * `upsertDelayedJob`'s catch logged it as "Couldn't schedule ..." and
+ * carried on, so nothing surfaced. The queue tests mock BullMQ, so they
+ * couldn't see a rule BullMQ enforces; `jobIds never contain a colon` below
+ * is the regression guard that works under the mock.
+ *
+ * Hence `gidTail`: job ids carry the trailing numeric id instead of the whole
+ * GID. The shop domain and the resource kind are already in the id, so that
+ * stays unique, and the full GID still travels in the job's data.
  */
+function gidTail(gid: string): string {
+  return gid.split("/").pop() || gid;
+}
+
 
 /**
  * Adds a delayed job under `jobId`, replacing any earlier one with the same
@@ -124,7 +140,7 @@ async function upsertDelayedJob(
 export function scheduleProductRecheck(shopDomain: string, productId: string): void {
   const queue = getRecheckQueue();
   RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
-    const jobId = `${shopDomain}|product|${productId}|${attempt}`;
+    const jobId = `${shopDomain}|product|${gidTail(productId)}|${attempt}`;
     void upsertDelayedJob(queue, jobId, "product", { shopDomain, productId, attempt }, delayMs);
   });
 }
@@ -132,7 +148,7 @@ export function scheduleProductRecheck(shopDomain: string, productId: string): v
 export function scheduleCollectionRecheck(shopDomain: string, collectionId: string): void {
   const queue = getRecheckQueue();
   RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
-    const jobId = `${shopDomain}|collection|${collectionId}|${attempt}`;
+    const jobId = `${shopDomain}|collection|${gidTail(collectionId)}|${attempt}`;
     void upsertDelayedJob(
       queue,
       jobId,

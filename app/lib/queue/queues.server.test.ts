@@ -56,7 +56,7 @@ describe("scheduleProductRecheck", () => {
 
     expect(add).toHaveBeenCalledTimes(RECHECK_DELAYS_MS.length);
     RECHECK_DELAYS_MS.forEach((delayMs, attempt) => {
-      const jobId = `shop.myshopify.com|product|gid://shopify/Product/1|${attempt}`;
+      const jobId = `shop.myshopify.com|product|1|${attempt}`;
       expect(remove).toHaveBeenCalledWith(jobId);
       expect(add).toHaveBeenCalledWith(
         "product",
@@ -95,7 +95,7 @@ describe("scheduleCollectionRecheck", () => {
     expect(add).toHaveBeenCalledWith(
       "collection",
       expect.objectContaining({ collectionId: "gid://shopify/Collection/9" }),
-      expect.objectContaining({ jobId: "shop.myshopify.com|collection|gid://shopify/Collection/9|0" }),
+      expect.objectContaining({ jobId: "shop.myshopify.com|collection|9|0" }),
     );
   });
 });
@@ -184,5 +184,30 @@ describe("scheduleAssignmentScan", () => {
     expect(upsertJobScheduler).toHaveBeenCalledTimes(2);
     const ids = upsertJobScheduler.mock.calls.map((call) => call[0]);
     expect(new Set(ids).size).toBe(1);
+  });
+});
+
+/**
+ * The guard for the bug that shipped from Sep 2026 to 14 Oct 2026: BullMQ
+ * rejects a custom job id containing ":" unless it splits into exactly three
+ * parts, and a Shopify GID carries one in "gid://", so every recheck job
+ * silently failed to schedule. Mocking BullMQ means these tests can't see
+ * that rule enforced, so it's asserted here directly.
+ */
+describe("job ids", () => {
+  it("never contain a colon, whatever the GID", async () => {
+    scheduleProductRecheck("shop.myshopify.com", "gid://shopify/Product/1234567890");
+    scheduleCollectionRecheck("shop.myshopify.com", "gid://shopify/Collection/9876543210");
+    scheduleCatalogSync("shop.myshopify.com", "catalog-1");
+    await flush();
+
+    const ids = add.mock.calls.map(([, , opts]) => (opts as { jobId: string }).jobId);
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids) {
+      expect(id).not.toContain(":");
+      // BullMQ's actual check: a colon is allowed only in a 3-part id, so
+      // assert the stricter "none at all" and that it isn't an integer either.
+      expect(`${parseInt(id, 10)}`).not.toEqual(id);
+    }
   });
 });
