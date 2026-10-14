@@ -196,7 +196,10 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
   (`METAFIELD_OPERATORS`). The builder lists product metafield definitions plus any
   indexed metafields without one. Rows written before metafields were indexed have
   none until the next rebuild.
-- `app/routes/app._index.tsx`: Catalogs page. `app.diagnostics.tsx`: Diagnostics page.
+- `app/routes/app._index.tsx`: Catalogs page, including the merchant-facing product
+  index status with Rebuild index / Refresh status (Diagnostics is hidden from the nav,
+  so merchant-facing copy must never send anyone there). `app.diagnostics.tsx`:
+  Diagnostics page, reachable by direct URL only.
   `app.catalogs.$catalogId.tsx`: rule builder with live preview (URL param from
   `app/lib/shopify/catalog-id.ts`, e.g. `MarketCatalog-123`). Saving writes only the
   app's database until managed mode.
@@ -237,7 +240,9 @@ groups each match ALL or ANY of their conditions. Default status handling: all s
    confirms the counts (re-checked on the server), removals of more than 25% or 100
    products and empty results need an extra tick, the index must be built, syncs are
    refused while Shopify is still changing the catalog (finding 19), one sync per catalog
-   at a time (row-locked), and **development stores only** until step 5 is tested. Syncs
+   at a time (row-locked). It was **development stores only** until step 5 was tested;
+   that gate was removed in Oct 2026 after App Store review reference 138074 blocked on
+   it (see "App Store review" below). Syncs
    run in-process for now (a restart interrupts them); catalogs change only on Apply or
    Sync now. "Stop managing" leaves products and autoPublish as they are. The page polls
    `app/routes/app.sync-status.$catalogId.tsx` (database only, no Shopify calls) while a
@@ -594,6 +599,32 @@ repo root, along with the checklist of what's still needed (icon, screenshots, d
 video, emergency contact, etc.) before submission. Decided (Sep 2026): submit
 free-only first (see "Pricing and billing" above), app card subtitle is "Rule-based
 catalogs that stay in sync".
+
+## App Store review
+
+`app-store-review-requirements.md` at the repo root holds the full requirement list,
+useful for mapping a reviewer's quoted numbers to the rule text.
+
+**First submission paused, Oct 2026 (reference 138074).** One core issue plus four
+informational notes:
+
+- **2.1.1 (the blocker)**: the reviewer built a rule on their own (non-development)
+  store, clicked apply and got "Can't apply yet — Managed mode only runs on
+  development stores for now", so review couldn't continue. The gate was the Phase 1
+  step 4 safety measure that should have been lifted when step 5 was finished and
+  tested; it's now gone from `blockersFor` in `app/lib/sync/managed.server.ts`.
+  **Lesson: a deliberate "for now" gate on a merchant-facing path is a review blocker,
+  so lift it as soon as the condition it was waiting on is met.** The same applies to
+  hiding a page from the nav (commit 9c4b3e9) while merchant-facing copy still points
+  at it: the index controls moved onto the Catalogs page at the same time.
+- **4.5.4 / 4.5.5 (test credentials)**: the app has no account system, but the testing
+  instructions must *say so explicitly* rather than leaving the field empty. Rewritten
+  in `app-store-listing.md`.
+- **1.2.1 / 1.2.2 (billing)**: nothing to do; the app is free-only with no charges
+  anywhere, which is exactly what those requirements allow. Shopify sends them as
+  boilerplate on any app with no billing code.
+- **2.1.4 (synchronize data accurately)**: the testing instructions now include a step
+  verifying the applied catalog against the Shopify admin.
 
 ## Commands
 

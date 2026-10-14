@@ -13,7 +13,6 @@ import {
   ruleNames,
   type RuleCatalog,
 } from "../rules/rules.server";
-import { getShopDiagnostics } from "../shopify/diagnostics.server";
 import {
   describeError,
   runGraphql,
@@ -224,8 +223,7 @@ async function blockersFor(
   knownShop?: Shop,
 ): Promise<string[]> {
   const blockers: string[] = [];
-  const [shopInfo, shop, running, state] = await Promise.all([
-    getShopDiagnostics(admin),
+  const [shop, running, state] = await Promise.all([
     knownShop
       ? Promise.resolve(knownShop)
       : prisma.shop.findUnique({ where: { domain: shopDomain } }),
@@ -246,13 +244,9 @@ async function blockersFor(
       "Shopify is still updating this catalog's products. Try again in a minute.",
     );
   }
-  // Agreed for Phase 1: only development stores until automatic syncing is tested.
-  if (!shopInfo.isDevelopmentStore) {
-    blockers.push("Managed mode only runs on development stores for now.");
-  }
   if (!shop?.productIndexRebuiltAt) {
     blockers.push(
-      "The product index hasn't been built yet. Rebuild it from Diagnostics.",
+      "The product index hasn't been built yet. Build it from the Catalogs page.",
     );
   } else if (shop.productIndexStatus === "RUNNING") {
     blockers.push(

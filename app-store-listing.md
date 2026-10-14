@@ -34,14 +34,16 @@ an interim version using "the right products" (flagged by the linter).
 
 Condensed from the earlier "Full description" draft to fit the 500-character limit
 and the form's rules (no links/URLs/formatting, no jargon or unverifiable claims).
-Also reworded away from "right" for the same linter reason as the introduction:
+Also reworded away from "right" for the same linter reason as the introduction, and
+reworded again after Shopify's AI listing check flagged "something Shopify's own
+catalogs don't support" as an unsubstantiated comparative claim:
 
-> Catalogic adds rule-based conditions to your Market and B2B catalogs, something
-> Shopify's own catalogs don't support. Build include and exclude rules from tags,
-> vendor, type, title, collection, category and metafields, then preview what would
-> change before anything is applied. Turn on automatic sync and new or updated
-> products join matching catalogs on their own. On Shopify Plus, assign B2B catalogs
-> to company locations automatically by metafield, rechecked on a schedule. (476/500)
+> Catalogic adds rule-based conditions to your Market and B2B catalogs. Build
+> include and exclude rules from tags, vendor, type, title, collection, category and
+> metafields, then preview what would change before anything is applied. Turn on
+> automatic sync and new or updated products join matching catalogs on their own. On
+> Shopify Plus, assign B2B catalogs to company locations automatically by metafield,
+> rechecked on a schedule. (428/500)
 
 Earlier, longer draft (not used, kept for reference — written before the character
 limit and no-links/no-backticks rules were checked against the actual form):
@@ -336,6 +338,13 @@ Questions about this policy or your data: web@danhall.uk.
   needed, test credentials so reviewers can install and try it themselves (e.g. on
   "Catalog Manager Test" or a store designated for review). This is the one that
   actually matters functionally, unlike the Demo store URL above.
+- [ ] **App handle**: still `smart-catalogs-dev` in the admin URL
+  (`.../apps/smart-catalogs-dev/app`), left over from before the rename to Catalogic.
+  Cosmetic only (merchants open the app from their Apps list, never type this URL), so
+  not a submission blocker, but decided (Sep 2026) to clean it up before launch. Rename
+  from the Partner Dashboard's app general settings; do this last, right before
+  submission, since it changes the URL again and would break anything bookmarked to
+  the current one in the meantime.
 
 ## App discovery content (Sep 2026)
 
@@ -372,39 +381,84 @@ catalogs a merchant already has configured.
 
 **Test account**: "My app doesn't require an account to use it" — Catalogic
 authenticates entirely through Shopify's own OAuth install flow, no separate
-username/password system inside the app.
+username/password system inside the app. Requirements 4.5.4 and 4.5.5 (include
+functional test credentials) are satisfied by saying this explicitly in the
+instructions below rather than leaving the field empty, which is what the first
+submission did.
 
-**Testing instructions** (ready to paste):
+**Testing instructions** (ready to paste; rewritten Oct 2026 for resubmission
+after review reference 138074, which stopped at the old step 6 and never
+completed an apply):
 
+> No login or test credentials are needed. Catalogic has no account system of its
+> own: it authenticates entirely through Shopify's OAuth install flow, so
+> installing it on your review store gives you the complete feature set. The app
+> is free, with no charges of any kind, so there is no billing flow to test.
+>
 > To test this app:
 >
-> 1. Install the app on your test store using the standard Shopify OAuth flow (no
->    separate login required — Catalogic authenticates entirely through Shopify).
-> 2. Once installed, you'll land on the Catalogs page, which lists every Market
->    and B2B catalog on the store with its product count and rule status.
-> 3. Click "Set up rules" on any Market catalog to open the rule builder.
-> 4. Under "Include products that match," add a condition (e.g. Vendor is [any
->    real vendor name from your store]) and save.
-> 5. The Preview section updates automatically, showing exactly which products
->    would be added or removed if the rule were applied, including a warning for
->    any products that wouldn't be visible to buyers.
-> 6. Click "Review changes" under "Apply to Shopify" to see the confirmation step
->    (large removals require an extra confirmation tick as a safety check) before
->    anything is actually applied.
+> 1. Install the app on your test store using the standard Shopify OAuth flow.
+> 2. You'll land on the Catalogs page, which lists every Market and B2B catalog on
+>    the store with its product count and rule status.
+> 3. At the top of that page is the "Product index" section. Catalogic builds its
+>    own copy of each product's rule fields when you install it, which takes
+>    anywhere from a few seconds to a couple of minutes depending on catalog size.
+>    Wait until it reads "X products indexed. Last rebuilt ..." before continuing
+>    (use "Refresh status" to update it). Rules can be built and previewed at any
+>    time, but applying them needs the index to have finished.
+> 4. Click "Set up rules" on any Market catalog to open the rule builder.
+> 5. Under "Include products that match," add a condition (for example Vendor is
+>    [any real vendor name from your store]) and click Save.
+> 6. The Preview section updates automatically, showing exactly which products
+>    would be added or removed if the rule were applied.
+> 7. Under "Apply to Shopify", click "Review changes". You'll see the counts the
+>    app is about to apply. Tick the confirmation (large removals require an extra
+>    tick as a safety check) and click the apply button to write the change to
+>    Shopify.
+> 8. To verify the data synced accurately, open the same catalog in the Shopify
+>    admin (Settings > Markets > [your market] > Catalog, or the B2B catalog's own
+>    page) and confirm its product list now matches the preview from step 6.
+> 9. Back in Catalogic, the catalog now shows a "Managed" badge and the time it
+>    was last synced. Changing a matching product in the Shopify admin (for
+>    example editing its vendor) re-syncs the catalog automatically within about
+>    two minutes. "Stop managing" on the rules page hands the catalog back,
+>    leaving its products exactly as they are.
 >
 > Testing B2B catalog assignment (Shopify Plus only, since B2B catalogs require
 > Plus):
-> 7. If your test store is on Shopify Plus and has at least one company location
->    with a metafield set, open a B2B catalog's rules page and scroll to
->    "Assignment conditions."
-> 8. Add a condition matching a company or location metafield you've set up, and
->    the Assignment preview will show which locations match, are already
->    assigned, or don't match.
+>
+> 10. If your test store is on Shopify Plus and has at least one company location
+>     with a metafield set, open a B2B catalog's rules page and scroll to
+>     "Assignment conditions."
+> 11. Add a condition matching a company or location metafield you've set up, and
+>     the Assignment preview will show which locations match, are already
+>     assigned, or don't match. "Apply assignments" then grants the matching
+>     locations access to that catalog.
 >
 > Note: if your review store isn't on Shopify Plus or doesn't have
-> company/location metafields configured, the B2B assignment feature (steps 7-8)
+> company/location metafields configured, the B2B assignment feature (steps 10-11)
 > can't be exercised — happy to provide direct access to a pre-configured Plus
 > store with this data set up if needed. Contact: web@danhall.uk.
+
+**What changed for this resubmission** (reference 138074, Oct 2026):
+
+- **2.1.1 (critical error blocking review)**: the reviewer saved a rule, clicked
+  apply, and hit a "Can't apply yet — Managed mode only runs on development
+  stores for now" blocker. That gate was a deliberate Phase 1 safety measure
+  while automatic syncing was untested (CLAUDE.md, Phase 1 step 4), and it should
+  have been lifted when Phase 1 step 5 was finished and tested. It has now been
+  removed from `app/lib/sync/managed.server.ts`, so applying works on any store.
+- The Catalogs page now has its own "Product index" controls (status, Rebuild
+  index, Refresh status). Three merchant-facing messages pointed at the
+  Diagnostics page, which was hidden from the nav in commit 9c4b3e9, so a
+  merchant following them had nowhere to go.
+- **1.2.1 / 1.2.2 (billing)**: no change needed. The app is submitted free-only
+  with no charges anywhere, in or outside Shopify, so neither Shopify App Pricing
+  nor the Billing API applies. This is the decision already recorded in CLAUDE.md's
+  "Pricing and billing" section; paid plans would be added later as a normal
+  Shopify App Pricing update.
+- **2.1.4 (synchronize data accurately)**: step 8 above now tells the reviewer
+  how to verify the applied result against the Shopify admin directly.
 
 **Screencast URL**: required field, not yet done — needs an actual recorded
 video (3-8 min, hosted on YouTube or a direct file link, not Google Drive/Vimeo).
